@@ -16,7 +16,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/go-logr/logr"
-	redisv1alpha1 "github.com/myname/my-redis-operator/api/v1alpha1"
+	redisv1alpha1 "github.com/xcdev-0/redis-operator/api/v1alpha1"
 )
 
 type RedisClusterReconciler struct {

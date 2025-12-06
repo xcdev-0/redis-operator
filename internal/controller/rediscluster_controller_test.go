@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	redisv1alpha1 "github.com/myname/my-redis-operator/api/v1alpha1"
+	redisv1alpha1 "github.com/xcdev-0/redis-operator/api/v1alpha1"
 )
 
 var _ = Describe("RedisCluster Controller", func() {

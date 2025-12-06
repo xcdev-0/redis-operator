@@ -25,7 +25,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/myname/my-redis-operator/test/utils"
+	"github.com/xcdev-0/redis-operator/test/utils"
 )
 
 var (

@@ -9,7 +9,7 @@ plugins:
   manifests.sdk.operatorframework.io/v2: {}
   scorecard.sdk.operatorframework.io/v2: {}
 projectName: redis-operator
-repo: github.com/myname/my-redis-operator
+repo: github.com/xcdev-0/redis-operator
 resources:
 - api:
     crdVersion: v1
@@ -18,6 +18,6 @@ resources:
   domain: devops.com
   group: redis
   kind: RedisCluster
-  path: github.com/myname/my-redis-operator/api/v1alpha1
+  path: github.com/xcdev-0/redis-operator/api/v1alpha1
   version: v1alpha1
 version: "3"
