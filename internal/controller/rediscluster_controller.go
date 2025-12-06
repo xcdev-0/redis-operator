@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	redisv1alpha1 "github.com/xcdev-0/redis-operator/api/v1alpha1"
+	k8sutils "github.com/xcdev-0/redis-operator/k8sutils"
 )
 
 type RedisClusterReconciler struct {
@@ -28,67 +28,11 @@ type RedisClusterReconciler struct {
 
 func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-
-	cluster := &redisv1alpha1.RedisCluster{}
-	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
-		if errors.IsNotFound(err) {
-			return ctrl.Result{}, nil
-		}
+	clusterHost, err := k8sutils.GetCluster(ctx, r.K8sClient)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	desiredMasters := cluster.Spec.Masters
-	desiredReplicas := cluster.Spec.Replicas
-	totalDesired := desiredMasters + desiredMasters*desiredReplicas
-
-	var readyCount int
-
-	// Create master pods
-	for i := 0; i < desiredMasters; i++ {
-		podName := fmt.Sprintf("%s-master-%d", cluster.Name, i)
-		if err := r.ensurePod(ctx, cluster, podName); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Create replica pods
-	for m := 0; m < desiredMasters; m++ {
-		for rIndex := 0; rIndex < desiredReplicas; rIndex++ {
-			podName := fmt.Sprintf("%s-replica-%d-%d", cluster.Name, m, rIndex)
-			if err := r.ensurePod(ctx, cluster, podName); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	}
-
-	// Count ready pods
-	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList, client.InNamespace(cluster.Namespace),
-		client.MatchingLabels{"rediscluster": cluster.Name}); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	for _, p := range podList.Items {
-		for _, cond := range p.Status.Conditions {
-			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-				readyCount++
-			}
-		}
-	}
-
-	// Update status
-	if cluster.Status.ReadyNodes != readyCount {
-		cluster.Status.ReadyNodes = readyCount
-		if err := r.Status().Update(ctx, cluster); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if readyCount != totalDesired {
-		return ctrl.Result{RequeueAfter: 5 * 1000000000}, nil
-	}
-
-	log.Info("All pods created and ready", "ready", readyCount)
+	log.Info("Cluster", "cluster", clusterHost)
 	return ctrl.Result{}, nil
 }
 
