@@ -9,12 +9,14 @@ import (
 )
 
 type RedisClusterSpec struct {
-	Masters  int `json:"masters"`
-	Replicas int `json:"replicas"`
+	Masters  int32  `json:"masters"`
+	Replicas int32  `json:"replicas"`
+	Image    string `json:"image,omitempty"`
+	BasePort int32  `json:"basePort,omitempty"`
 }
 
 type RedisClusterStatus struct {
-	ReadyNodes int `json:"readyNodes"`
+	ReadyNodes int32 `json:"readyNodes,omitempty"`
 }
 
 // +kubebuilder:object:root=true

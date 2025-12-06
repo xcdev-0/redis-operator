@@ -1,0 +1,9 @@
+apiVersion: redis.devops.com/v1alpha1
+kind: RedisCluster
+metadata:
+  name: test-cluster
+spec:
+  masters: 3
+  replicas: 1
+  image: redis:7.0
+  basePort: 6379

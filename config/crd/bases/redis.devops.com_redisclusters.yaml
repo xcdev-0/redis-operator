@@ -37,9 +37,16 @@ spec:
             type: object
           spec:
             properties:
+              basePort:
+                format: int32
+                type: integer
+              image:
+                type: string
               masters:
+                format: int32
                 type: integer
               replicas:
+                format: int32
                 type: integer
             required:
             - masters
@@ -48,9 +55,8 @@ spec:
           status:
             properties:
               readyNodes:
+                format: int32
                 type: integer
-            required:
-            - readyNodes
             type: object
         type: object
     served: true
