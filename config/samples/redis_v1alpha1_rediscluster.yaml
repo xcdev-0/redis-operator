@@ -1,0 +1,8 @@
+apiVersion: redis.devops.com/v1alpha1
+kind: RedisCluster
+metadata:
+  name: example-redis
+  namespace: default
+spec:
+  masters: 3        # Master 3개
+  replicas: 1       # Master당 Replica 1개 (총 3개)
