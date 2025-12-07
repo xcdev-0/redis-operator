@@ -3,6 +3,8 @@ package k8sutils
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/go-logr/logr"
 	redisv1alpha1 "github.com/xcdev-0/redis-operator/api/v1alpha1"
@@ -10,7 +12,23 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 )
+
+func getKubeConfig() (*rest.Config, error) {
+	// 1) 로컬 kubeconfig 시도
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig := filepath.Join(home, ".kube", "config")
+		if _, err := os.Stat(kubeconfig); err == nil {
+			return clientcmd.BuildConfigFromFlags("", kubeconfig)
+		}
+	}
+
+	// 2) 인클러스터 설정 시도
+	return rest.InClusterConfig()
+}
 
 func IsPodRunning(ctx context.Context, k8scl kubernetes.Interface, namespace, podName, containerName string, logger logr.Logger) (bool, error) {
 	pod, err := k8scl.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
@@ -39,20 +57,14 @@ func IsPodRunning(ctx context.Context, k8scl kubernetes.Interface, namespace, po
 }
 
 // GenerateRedisPodDef creates a Redis Pod for cluster: rc, index: 0/1/2...
-func GenerateRedisPodDef(rc *redisv1alpha1.RedisCluster, index int) *corev1.Pod {
-	podName := fmt.Sprintf("%s-%d", rc.Name, index)
-
-	redisPort := rc.Spec.BasePort // 예: 6379
-	busPort := redisPort + 10000  // 예: 16379 (Redis cluster bus port)
-
+func GenerateRedisPodDef(rc *redisv1alpha1.RedisCluster, name string, index int) *corev1.Pod {
+	redisPort := rc.Spec.BasePort
+	busPort := redisPort + 10000
 	image := rc.Spec.Image
-	if rc.Spec.Tag != "" {
-		image = fmt.Sprintf("%s:%s", rc.Spec.Image, rc.Spec.Tag)
-	}
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
+			Name:      name,
 			Namespace: rc.Namespace,
 			Labels: map[string]string{
 				"app":         "redis",

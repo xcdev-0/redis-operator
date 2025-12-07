@@ -54,9 +54,62 @@ spec:
             type: object
           status:
             properties:
-              readyNodes:
-                format: int32
-                type: integer
+              failedMasterMap:
+                additionalProperties:
+                  properties:
+                    masterNodeID:
+                      type: string
+                    nodeID:
+                      type: string
+                    podName:
+                      type: string
+                  required:
+                  - nodeID
+                  - podName
+                  type: object
+                type: object
+              failedReplicaMap:
+                additionalProperties:
+                  properties:
+                    masterNodeID:
+                      type: string
+                    nodeID:
+                      type: string
+                    podName:
+                      type: string
+                  required:
+                  - nodeID
+                  - podName
+                  type: object
+                type: object
+              masterMap:
+                additionalProperties:
+                  properties:
+                    masterNodeID:
+                      type: string
+                    nodeID:
+                      type: string
+                    podName:
+                      type: string
+                  required:
+                  - nodeID
+                  - podName
+                  type: object
+                type: object
+              replicaMap:
+                additionalProperties:
+                  properties:
+                    masterNodeID:
+                      type: string
+                    nodeID:
+                      type: string
+                    podName:
+                      type: string
+                  required:
+                  - nodeID
+                  - podName
+                  type: object
+                type: object
             type: object
         type: object
     served: true
