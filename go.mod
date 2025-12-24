@@ -11,8 +11,14 @@ require (
 )
 
 require (
+	emperror.dev/errors v0.8.0 // indirect
+	github.com/evanphx/json-patch v4.9.0+incompatible // indirect
+)
+
+require (
 	cel.dev/expr v0.19.1 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
+	github.com/banzaicloud/k8s-objectmatcher v1.8.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
