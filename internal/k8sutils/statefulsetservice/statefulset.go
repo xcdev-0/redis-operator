@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/xc/redis-operator/internal/k8sutils/consts"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -13,7 +14,7 @@ import (
 
 	"github.com/banzaicloud/k8s-objectmatcher/patch"
 	"github.com/xc/redis-operator/api/v1beta2"
-	helper "github.com/xc/redis-operator/internal/k8sutils/helper"
+	"github.com/xc/redis-operator/internal/k8sutils/k8smeta"
 )
 
 type StatefulSet interface {
@@ -129,13 +130,23 @@ func generateStatefulSet(
 	containerParams containerParameters,
 	sidecars []v1beta2.Sidecar) *appsv1.StatefulSet {
 
-	selectorLabels := helper.ExtractStatefulSetSelectorLabels(stsMeta.GetLabels())
+	selectorLabels := k8smeta.ExtractStatefulSetSelectorLabels(stsMeta.GetLabels())
+	containerConfig := ContainerConfig{
+		Name:   stsMeta.GetName(),
+		Params: containerParams,
+		Runtime: RuntimeCfg{
+			ClusterModeEnabled:    params.ClusterMode,
+			NodeConfVolumeEnabled: params.NodeConfVolume,
+		},
+		AdditionalConfigMap: params.AdditionalConfigMap,
+		ClusterVersion:      params.ClusterVersion,
+	}
 
 	statefulset := &appsv1.StatefulSet{
-		TypeMeta:   helper.GenerateMetaInformation("StatefulSet", "apps/v1"),
+		TypeMeta:   k8smeta.GenerateMetaInformation("StatefulSet", "apps/v1"),
 		ObjectMeta: stsMeta,
 		Spec: appsv1.StatefulSetSpec{
-			Selector:                             helper.LabelSelectors(selectorLabels),
+			Selector:                             k8smeta.LabelSelectors(selectorLabels),
 			ServiceName:                          fmt.Sprintf("%s-headless", stsMeta.Name),
 			Replicas:                             params.Replicas,
 			UpdateStrategy:                       params.UpdateStrategy,
@@ -144,10 +155,18 @@ func generateStatefulSet(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      stsMeta.GetLabels(),
-					Annotations: helper.GenerateStatefulSetsAnots(stsMeta, params.IgnoreAnnotations),
+					Annotations: k8smeta.GenerateStatefulSetsAnots(stsMeta, params.IgnoreAnnotations),
+				},
+				Spec: corev1.PodSpec{
+					Containers: generateContainerDef(containerConfig),
+					Volumes:    []corev1.Volume{generateEmptyVolume(consts.InitConfigVolumeName)},
 				},
 			},
 		},
+	}
+
+	if params.AdditionalConfigMap != nil {
+		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes, generateExternalConfigVolume(*params.AdditionalConfigMap)...)
 	}
 	return statefulset
 }

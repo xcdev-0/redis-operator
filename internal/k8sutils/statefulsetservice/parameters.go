@@ -29,7 +29,7 @@ type statefulSetParameters struct {
 	PersistentVolumeClaim                corev1.PersistentVolumeClaim                            // 데이터 저장용 PVC 템플릿
 	NodeConfPersistentVolumeClaim        corev1.PersistentVolumeClaim                            // 노드 설정 저장용 PVC 템플릿 (클러스터 모드)
 	ImagePullSecrets                     *[]corev1.LocalObjectReference                          // 이미지 풀 시크릿 (프라이빗 레지스트리용)
-	ExternalConfig                       *string                                                 // 외부 ConfigMap 이름 (추가 Redis 설정)
+	AdditionalConfigMap                  *string                                                 // 외부 ConfigMap 이름 (추가 Redis 설정)
 	ServiceAccountName                   *string                                                 // Pod에 사용할 ServiceAccount 이름
 	UpdateStrategy                       appsv1.StatefulSetUpdateStrategy                        // StatefulSet 업데이트 전략
 	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy // PVC 보존 정책
@@ -44,32 +44,26 @@ type statefulSetParameters struct {
 // containerParameters는 Redis 컨테이너 생성에 필요한 모든 파라미터를 담는 구조체입니다.
 // 이 구조체는 메인 Redis 컨테이너와 Redis Exporter 사이드카 컨테이너의 설정을 정의합니다.
 type containerParameters struct {
-	Image                        string                       // Redis 컨테이너 이미지
-	ImagePullPolicy              corev1.PullPolicy            // 이미지 풀 정책 (Always, IfNotPresent, Never)
-	Resources                    *corev1.ResourceRequirements // 컨테이너 리소스 요구사항 (CPU, 메모리)
-	MaxMemoryPercentOfLimit      *int                         // 메모리 제한의 최대 사용 비율 (0-100)
-	SecurityContext              *corev1.SecurityContext      // 컨테이너 보안 컨텍스트
-	RedisExporterImage           string                       // Redis Exporter 이미지
-	RedisExporterImagePullPolicy corev1.PullPolicy            // Redis Exporter 이미지 풀 정책
-	RedisExporterResources       *corev1.ResourceRequirements // Redis Exporter 리소스 요구사항
-	RedisExporterEnv             *[]corev1.EnvVar             // Redis Exporter 환경 변수
-	RedisExporterPort            *int                         // Redis Exporter 포트
-	RedisExporterSecurityContext *corev1.SecurityContext      // Redis Exporter 보안 컨텍스트
-	Role                         string                       // Redis 역할 (leader, follower, sentinel, cluster 등)
-	EnabledPassword              *bool                        // Redis 인증 활성화 여부
-	SecretName                   *string                      // 비밀번호가 저장된 Secret 이름
-	SecretKey                    *string                      // Secret 내 비밀번호 키 이름
-	PersistenceEnabled           *bool                        // 데이터 영속성 활성화 여부
-	TLSConfig                    *v1beta2.TLSConfig           // TLS 설정
-	ACLConfig                    *v1beta2.ACLConfig           // ACL (Access Control List) 설정
-	ReadinessProbe               *corev1.Probe                // Readiness Probe 설정
-	LivenessProbe                *corev1.Probe                // Liveness Probe 설정
-	AdditionalEnvVariable        *[]corev1.EnvVar             // 추가 환경 변수
-	AdditionalVolume             []corev1.Volume              // 추가 볼륨
-	AdditionalMountPath          []corev1.VolumeMount         // 추가 볼륨 마운트 경로
-	EnvVars                      *[]corev1.EnvVar             // 환경 변수 목록
-	Port                         *int                         // Redis 포트
-	HostPort                     *int                         // 호스트 포트 (HostNetwork 사용 시)
+	Image                   string                       // Redis 컨테이너 이미지
+	ImagePullPolicy         corev1.PullPolicy            // 이미지 풀 정책 (Always, IfNotPresent, Never)
+	Resources               *corev1.ResourceRequirements // 컨테이너 리소스 요구사항 (CPU, 메모리)
+	MaxMemoryPercentOfLimit *int                         // 메모리 제한의 최대 사용 비율 (0-100)
+	SecurityContext         *corev1.SecurityContext      // 컨테이너 보안 컨텍스트
+	Role                    string                       // Redis 역할 (leader, follower, sentinel, cluster 등)
+	EnabledPassword         *bool                        // Redis 인증 활성화 여부
+	SecretName              *string                      // 비밀번호가 저장된 Secret 이름
+	SecretKey               *string                      // Secret 내 비밀번호 키 이름
+	PersistenceEnabled      *bool                        // 데이터 영속성 활성화 여부
+	TLSConfig               *v1beta2.TLSConfig           // TLS 설정
+	ACLConfig               *v1beta2.ACLConfig           // ACL (Access Control List) 설정
+	ReadinessProbe          *corev1.Probe                // Readiness Probe 설정
+	LivenessProbe           *corev1.Probe                // Liveness Probe 설정
+	AdditionalEnvVariable   *[]corev1.EnvVar             // 추가 환경 변수
+	AdditionalVolume        []corev1.Volume              // 추가 볼륨
+	AdditionalMountPath     []corev1.VolumeMount         // 추가 볼륨 마운트 경로
+	EnvVars                 *[]corev1.EnvVar             // 환경 변수 목록
+	Port                    *int                         // Redis 포트
+	HostPort                *int                         // 호스트 포트 (HostNetwork 사용 시)
 }
 
 type initContainerParameters struct {
