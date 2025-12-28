@@ -1,6 +1,7 @@
 package statefulsetservice
 
 import (
+	"path"
 	"sort"
 	"strconv"
 
@@ -9,16 +10,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func getEnvironmentVariables(
-	role string,
-	enabledPassword *bool,
-	secretName *string,
-	secretKey *string,
-	persistenceEnabled *bool,
-	tlsConfig *v1beta2.TLSConfig,
-	aclConfig *v1beta2.ACLConfig,
-	envVar *[]corev1.EnvVar,
-	port *int, clusterVersion *string,
+// getEnvironmentVariables는 Redis 컨테이너에 필요한 모든 환경 변수를 생성합니다.
+// 이 환경 변수들은 Redis 설정, 인증, TLS, ACL 등을 제어하는 데 사용됩니다.
+func getEnvironmentVariables(role string, enabledPassword *bool, secretName *string,
+	secretKey *string, persistenceEnabled *bool, tlsConfig *v1beta2.TLSConfig,
+	aclConfig *v1beta2.ACLConfig, envVar *[]corev1.EnvVar, port *int, clusterVersion *string,
 ) []corev1.EnvVar {
 	// 기본 환경 변수: Redis 역할 설정
 	envVars := []corev1.EnvVar{
@@ -35,16 +31,18 @@ func getEnvironmentVariables(
 	}
 
 	// Redis 연결 주소 설정 (Sentinel과 일반 Redis 구분)
-	var redisHost string = "redis://localhost:" + strconv.Itoa(consts.RedisPort)
+	p := consts.RedisPort
 	if port != nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: "REDIS_PORT", Value: strconv.Itoa(*port),
-		})
+		p = *port
 	}
+	redisHost := "redis://localhost:" + strconv.Itoa(p)
+	envVars = append(envVars, corev1.EnvVar{
+		Name: "REDIS_PORT", Value: strconv.Itoa(p),
+	})
 
 	// TLS 환경 변수 추가
 	if tlsConfig != nil {
-		envVars = append(envVars, GenerateTLSEnvironmentVariables(tlsConfig)...)
+		envVars = append(envVars, generateTLSEnvironmentVariables(tlsConfig)...)
 	}
 
 	// ACL 모드 활성화
@@ -85,8 +83,51 @@ func getEnvironmentVariables(
 		envVars = append(envVars, *envVar...)
 	}
 
+	// 환경 변수를 이름순으로 정렬 (일관성 유지)
 	sort.SliceStable(envVars, func(i, j int) bool {
 		return envVars[i].Name < envVars[j].Name
+	})
+
+	return envVars
+}
+func generateTLSEnvironmentVariables(tlsconfig *v1beta2.TLSConfig) []corev1.EnvVar {
+	var envVars []corev1.EnvVar
+	root := "/tls/" // TLS 인증서가 마운트된 경로
+
+	caCert := "ca.crt"
+	tlsCert := "tls.crt"
+	tlsCertKey := "tls.key"
+
+	// 사용자가 커스텀 파일명을 지정한 경우 사용
+	if tlsconfig.CaKeyFile != "" {
+		caCert = tlsconfig.CaKeyFile
+	}
+	if tlsconfig.CertKeyFile != "" {
+		tlsCert = tlsconfig.CertKeyFile
+	}
+	if tlsconfig.KeyFile != "" {
+		tlsCertKey = tlsconfig.KeyFile
+	}
+
+	// TLS 모드 활성화 환경 변수
+	envVars = append(envVars, corev1.EnvVar{
+		Name:  "TLS_MODE",
+		Value: "true",
+	})
+	// CA 인증서 경로
+	envVars = append(envVars, corev1.EnvVar{
+		Name:  "REDIS_TLS_CA_KEY",
+		Value: path.Join(root, caCert), // 예: /tls/ca.crt
+	})
+	// 서버 인증서 경로
+	envVars = append(envVars, corev1.EnvVar{
+		Name:  "REDIS_TLS_CERT",
+		Value: path.Join(root, tlsCert), // 예: /tls/tls.crt
+	})
+	// 서버 개인키 경로
+	envVars = append(envVars, corev1.EnvVar{
+		Name:  "REDIS_TLS_CERT_KEY",
+		Value: path.Join(root, tlsCertKey), // 예: /tls/tls.key
 	})
 	return envVars
 }
