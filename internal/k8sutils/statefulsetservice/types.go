@@ -16,29 +16,22 @@ type InitContainerConfig struct {
 }
 
 type ContainerConfig struct {
-	Name string
-
+	Name                   string
 	AdditionalVolumeMounts []corev1.VolumeMount
 	ExternalConfig         *string
-
-	Runtime RuntimeCfg
-
-	ClusterVersion  *string
-	ContainerParams containerParameters
+	Runtime                RuntimeCfg
+	ClusterVersion         *string
+	ContainerParams        containerParameters
 }
 
 type VolumeMountParams struct {
-	Name string
-
+	Name                   string
 	AdditionalVolumeMounts []corev1.VolumeMount
-
-	Persistence PersistenceCfg
-	Runtime     RuntimeCfg
-
-	ExternalConfig *string
-
-	TLS *v1beta2.TLSConfig
-	ACL *v1beta2.ACLConfig
+	Persistence            PersistenceCfg
+	Runtime                RuntimeCfg
+	ExternalConfig         *string
+	TLS                    *v1beta2.TLSConfig
+	ACL                    *v1beta2.ACLConfig
 }
 
 type PersistenceCfg struct {
@@ -51,6 +44,15 @@ type RuntimeCfg struct {
 	NodeConfVolumeEnabled bool
 }
 
-type ExternalCfg struct {
-	Config *string
+type EnvConfig struct {
+	Role               string
+	EnabledPassword    *bool
+	SecretName         *string
+	SecretKey          *string
+	PersistenceEnabled *bool
+	TLSConfig          *v1beta2.TLSConfig
+	ACLConfig          *v1beta2.ACLConfig
+	EnvVars            *[]corev1.EnvVar
+	Port               *int
+	ClusterVersion     *string
 }

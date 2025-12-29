@@ -17,14 +17,21 @@ func generateEmptyVolume(volumeName string) corev1.Volume {
 	}
 }
 
-func generateConfigVolumeMount(volumeName string) corev1.VolumeMount {
+func generateInitConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
 		MountPath: "/etc/redis",
 	}
 }
 
-func convertFromConfigmapToVolume(volumeName, configMapName string) []corev1.Volume {
+func generateExternalConfigVolumeMount(volumeName string) corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      volumeName,
+		MountPath: "/etc/redis/external.conf.d",
+	}
+}
+
+func convertFromConfigmapToVolume(volumeName string, configMapName string) []corev1.Volume {
 	return []corev1.Volume{
 		{
 			Name: volumeName,
@@ -78,20 +85,19 @@ func getVolumeMount(p VolumeMountParams) []corev1.VolumeMount {
 	// 유저가 제공한 컨피그맵을 마운트
 	// 컨피그맵 -> external-config 볼륨 이 볼륨을 마운트
 	if p.ExternalConfig != nil {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      consts.InitAdditionalConfigVolumeName,
-			MountPath: "/etc/redis/external.conf.d",
-		})
+		mounts = append(mounts,
+			generateExternalConfigVolumeMount(consts.ExternalInitConfigVolumeName))
 	}
 
 	// Init Container에서 생성한 설정 파일 볼륨 마운트
-	mounts = append(mounts, generateConfigVolumeMount(consts.InitConfigVolumeName))
+	mounts = append(mounts, generateInitConfigVolumeMount(consts.InitConfigVolumeName))
 
 	// 추가 볼륨 마운트
 	mounts = append(mounts, p.AdditionalVolumeMounts...)
 
 	return mounts
 }
+
 func createPVCTemplate(volumeName string, stsMeta metav1.ObjectMeta, storageSpec corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {
 	pvcTemplate := storageSpec // 복사후 필요한 필드만 설정
 

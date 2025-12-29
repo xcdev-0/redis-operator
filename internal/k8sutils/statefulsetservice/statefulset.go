@@ -131,13 +131,12 @@ func generateStatefulSet(
 	containerParams containerParameters,
 	sidecars []v1beta2.Sidecar) *appsv1.StatefulSet {
 
-	selectorLabels := k8smeta.ExtractStatefulSetSelectorLabels(stsMeta.GetLabels())
-
 	statefulset := &appsv1.StatefulSet{
 		TypeMeta:   k8smeta.GenerateMetaInformation("StatefulSet", "apps/v1"),
 		ObjectMeta: stsMeta,
 		Spec: appsv1.StatefulSetSpec{
-			Selector:                             k8smeta.LabelSelectors(selectorLabels),
+			Selector: k8smeta.LabelSelectors(
+				k8smeta.ExtractStatefulSetSelectorLabels(stsMeta.GetLabels())),
 			ServiceName:                          fmt.Sprintf("%s-headless", stsMeta.Name),
 			Replicas:                             stsParams.Replicas,
 			UpdateStrategy:                       stsParams.UpdateStrategy,
@@ -150,7 +149,7 @@ func generateStatefulSet(
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
-					Containers: generateContainerDef(ContainerConfig{
+					Containers: generateMainContainerDef(ContainerConfig{
 						Name:            stsMeta.GetName(),
 						ContainerParams: containerParams,
 						Runtime: RuntimeCfg{
@@ -185,7 +184,7 @@ func generateStatefulSet(
 	if stsParams.ExternalConfig != nil {
 		statefulset.Spec.Template.Spec.Volumes = append(
 			statefulset.Spec.Template.Spec.Volumes,
-			convertFromConfigmapToVolume(consts.InitAdditionalConfigVolumeName, *stsParams.ExternalConfig)...)
+			convertFromConfigmapToVolume(consts.ExternalInitConfigVolumeName, *stsParams.ExternalConfig)...)
 	}
 
 	// 추가 볼륨 추가
@@ -197,7 +196,7 @@ func generateStatefulSet(
 	if containerParams.TLSConfig != nil {
 		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
 			corev1.Volume{
-				Name: "tls-certs",
+				Name: consts.TLSCertsVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					Secret: &containerParams.TLSConfig.Secret,
 				},
@@ -210,7 +209,7 @@ func generateStatefulSet(
 			// ACL이 Secret에 저장된 경우
 			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
 				corev1.Volume{
-					Name: "acl-secret",
+					Name: consts.ACLSecretVolumeName,
 					VolumeSource: corev1.VolumeSource{
 						Secret: containerParams.ACLConfig.Secret,
 					},
@@ -219,7 +218,7 @@ func generateStatefulSet(
 			// ACL이 PVC에 저장된 경우
 			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
 				corev1.Volume{
-					Name: "acl-pvc",
+					Name: consts.ACLPVCVolumeName,
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 							ClaimName: *containerParams.ACLConfig.PersistentVolumeClaim,
