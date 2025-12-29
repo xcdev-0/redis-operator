@@ -2,21 +2,16 @@ package bootstrap
 
 import (
 	"github.com/spf13/cobra"
-	"github.com/xc/redis-operator/internal/agent/bootstrap"
+	"github.com/xcdev-0/redis-operator/internal/agent/bootstrap"
 )
 
 func CMD() *cobra.Command {
 	bootstrapCmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Bootstrap do some init work before run redis/sentinel",
+		Short: "Bootstrap do some init work before run redis",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sentinel, err := cmd.Flags().GetBool("sentinel")
-			if err != nil {
-				return err
-			}
-			return bootstrap.NewTask(sentinel).Run()
+			return bootstrap.Run()
 		},
 	}
-	bootstrapCmd.Flags().Bool("sentinel", false, "Generate sentinel config instead of redis config")
 	return bootstrapCmd
 }

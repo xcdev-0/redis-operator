@@ -6,12 +6,12 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	redisclustercontroller "github.com/xc/redis-operator/internal/controller"
-	"github.com/xc/redis-operator/internal/envs"
-	"github.com/xc/redis-operator/internal/k8sutils/helper"
-	"github.com/xc/redis-operator/internal/k8sutils/redis"
-	"github.com/xc/redis-operator/internal/k8sutils/statefulsetservice"
-	"github.com/xc/redis-operator/internal/scheme"
+	redisclustercontroller "github.com/xcdev-0/redis-operator/internal/controller"
+	"github.com/xcdev-0/redis-operator/internal/envs"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/redis"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice"
+	"github.com/xcdev-0/redis-operator/internal/scheme"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -182,10 +182,10 @@ func createControllerOptions(opts *managerOptions) ctrl.Options {
 func createK8sClient() (kubernetes.Interface, error) {
 	// Kubernetes 설정을 생성합니다.
 	// ~/.kube/config 또는 ServiceAccount 토큰에서 설정을 로드합니다.
-	k8sConfig := helper.GenerateK8sConfig()
+	k8sConfig := k8smeta.GenerateK8sConfig()
 
 	// Kubernetes 클라이언트를 생성합니다.
-	k8sClient, err := helper.GenerateK8sClient(k8sConfig)
+	k8sClient, err := k8smeta.GenerateK8sClient(k8sConfig)
 	if err != nil {
 		setupLog.Error(err, "unable to create k8s client")
 		return nil, err
