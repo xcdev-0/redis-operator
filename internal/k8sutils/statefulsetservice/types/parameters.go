@@ -12,9 +12,9 @@ const (
 	redisExporterContainer = "redis-exporter"
 )
 
-// statefulSetParameters는 StatefulSet 생성에 필요한 모든 파라미터를 담는 구조체입니다.
+// StatefulSetParameters는 StatefulSet 생성에 필요한 모든 파라미터를 담는 구조체입니다.
 // 이 구조체는 StatefulSet의 스펙을 정의하는 데 사용됩니다.
-type statefulSetParameters struct {
+type StatefulSetParameters struct {
 	Replicas                             *int32                                                  // StatefulSet의 레플리카 수
 	ClusterModeEnabled                   bool                                                    // Redis Cluster 모드 활성화 여부
 	ClusterVersion                       *string                                                 // Redis 클러스터 버전
@@ -41,9 +41,9 @@ type statefulSetParameters struct {
 	MinReadySeconds                      int32                                                   // Pod가 준비된 것으로 간주되기 전 최소 대기 시간 (초)
 }
 
-// containerParameters는 Redis 컨테이너 생성에 필요한 모든 파라미터를 담는 구조체입니다.
+// ContainerParameters는 Redis 컨테이너 생성에 필요한 모든 파라미터를 담는 구조체입니다.
 // 이 구조체는 메인 Redis 컨테이너와 Redis Exporter 사이드카 컨테이너의 설정을 정의합니다.
-type containerParameters struct {
+type ContainerParameters struct {
 	Image                   string                       // Redis 컨테이너 이미지
 	ImagePullPolicy         corev1.PullPolicy            // 이미지 풀 정책 (Always, IfNotPresent, Never)
 	Resources               *corev1.ResourceRequirements // 컨테이너 리소스 요구사항 (CPU, 메모리)
@@ -66,7 +66,7 @@ type containerParameters struct {
 	HostPort                *int                         // 호스트 포트 (HostNetwork 사용 시)
 }
 
-type initContainerParameters struct {
+type InitContainerParameters struct {
 	Enabled               *bool                        // Init Container 활성화 여부
 	Image                 string                       // Init Container 이미지
 	ImagePullPolicy       corev1.PullPolicy            // Init Container 이미지 풀 정책

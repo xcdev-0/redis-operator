@@ -7,12 +7,13 @@ import (
 
 	v1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
+	types "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/types"
 	corev1 "k8s.io/api/core/v1"
 )
 
 // getEnvironmentVariables는 Redis 컨테이너에 필요한 모든 환경 변수를 생성합니다.
 // 이 환경 변수들은 Redis 설정, 인증, TLS, ACL 등을 제어하는 데 사용됩니다.
-func getEnvironmentVariables(cfg EnvConfig) []corev1.EnvVar {
+func getEnvironmentVariables(cfg types.EnvConfig) []corev1.EnvVar {
 	// 기본 환경 변수: Redis 역할 설정
 	envVars := []corev1.EnvVar{
 		{Name: "SERVER_MODE", Value: cfg.Role}, // 서버 모드 (leader, follower, sentinel, cluster 등)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
+	types "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/types"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -14,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/banzaicloud/k8s-objectmatcher/patch"
-	"github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 )
 
@@ -96,18 +96,15 @@ func GetStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace stri
 	return statefulInfo, nil
 }
 
-func CreateOrUpdateStateFul(ctx context.Context,
-	cl kubernetes.Interface,
-	namespace string,
-	stsMeta metav1.ObjectMeta,
-	params statefulSetParameters,
-	ownerDef metav1.OwnerReference,
-	initcontainerParams initContainerParameters,
-	containerParams containerParameters,
-	sidecars *[]v1beta2.Sidecar) error {
-
-	storedStateful, err := GetStatefulSet(ctx, cl, namespace, stsMeta.Name)
-	statefulSetDef := generateStatefulSet(stsMeta, params, ownerDef, initcontainerParams, containerParams, getSidecars(sidecars))
+func CreateOrUpdateStateFul(ctx context.Context, req types.StatefulSetRequest) error {
+	storedStateful, err := GetStatefulSet(ctx, req.KubeClient, req.Namespace, req.StatefulSetMeta.Name)
+	statefulSetDef := generateStatefulSet(
+		req.StatefulSetMeta,
+		req.StatefulSetParams,
+		req.OwnerReference,
+		req.InitContainerParams,
+		req.ContainerParams,
+	)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// StatefulSet이 존재하지 않는 경우에만 어노테이션 설정
@@ -115,21 +112,21 @@ func CreateOrUpdateStateFul(ctx context.Context,
 				log.FromContext(ctx).Error(err, "Unable to patch redis statefulset with comparison object")
 				return err
 			}
-			return createStatefulSet(ctx, cl, namespace, statefulSetDef)
+			return createStatefulSet(ctx, req.KubeClient, req.Namespace, statefulSetDef)
 		}
 		// 다른 에러는 바로 반환
 		return err
 	}
-	return patchStatefulSet(ctx, storedStateful, statefulSetDef, namespace, params.RecreateStatefulSet, params.RecreateStatefulsetStrategy, cl)
+	return patchStatefulSet(ctx, storedStateful, statefulSetDef, req.Namespace, req.StatefulSetParams.RecreateStatefulSet, req.StatefulSetParams.RecreateStatefulsetStrategy, req.KubeClient)
 }
 
 func generateStatefulSet(
 	stsMeta metav1.ObjectMeta,
-	stsParams statefulSetParameters,
+	stsParams types.StatefulSetParameters,
 	ownerDef metav1.OwnerReference,
-	initcontainerParams initContainerParameters,
-	containerParams containerParameters,
-	sidecars []v1beta2.Sidecar) *appsv1.StatefulSet {
+	initcontainerParams types.InitContainerParameters,
+	containerParams types.ContainerParameters,
+) *appsv1.StatefulSet {
 
 	statefulset := &appsv1.StatefulSet{
 		TypeMeta:   k8smeta.GenerateMetaInformation("StatefulSet", "apps/v1"),
@@ -149,10 +146,10 @@ func generateStatefulSet(
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
-					Containers: generateMainContainerDef(ContainerConfig{
+					Containers: generateMainContainerDef(types.ContainerConfig{
 						Name:            stsMeta.GetName(),
 						ContainerParams: containerParams,
-						Runtime: RuntimeCfg{
+						Runtime: types.RuntimeCfg{
 							ClusterModeEnabled:    stsParams.ClusterModeEnabled,
 							NodeConfVolumeEnabled: stsParams.NodeConfVolumeEnabled,
 						},
@@ -166,7 +163,7 @@ func generateStatefulSet(
 						generateEmptyVolume(consts.InitConfigVolumeName)},
 
 					// Init Container 설정
-					InitContainers: generateInitContainerDef(InitContainerConfig{
+					InitContainers: generateInitContainerDef(types.InitContainerConfig{
 						Role:                    containerParams.Role,
 						Name:                    stsMeta.GetName(),
 						InitContainerParameters: initcontainerParams,

@@ -3,6 +3,7 @@ package statefulsetservice
 import (
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
+	types "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/types"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,7 +47,7 @@ func convertFromConfigmapToVolume(volumeName string, configMapName string) []cor
 	}
 }
 
-func getVolumeMount(p VolumeMountParams) []corev1.VolumeMount {
+func getVolumeMount(p types.VolumeMountParams) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
 	if p.Runtime.ClusterModeEnabled && p.Runtime.NodeConfVolumeEnabled {
