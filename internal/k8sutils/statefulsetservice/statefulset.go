@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	types "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/types"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/model"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -96,7 +96,7 @@ func GetStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace stri
 	return statefulInfo, nil
 }
 
-func CreateOrUpdateStateFul(ctx context.Context, req types.StatefulSetRequest) error {
+func CreateOrUpdateStateFul(ctx context.Context, req model.StatefulSetRequest) error {
 	storedStateful, err := GetStatefulSet(ctx, req.KubeClient, req.Namespace, req.StatefulSetMeta.Name)
 	statefulSetDef := generateStatefulSet(
 		req.StatefulSetMeta,
@@ -122,10 +122,10 @@ func CreateOrUpdateStateFul(ctx context.Context, req types.StatefulSetRequest) e
 
 func generateStatefulSet(
 	stsMeta metav1.ObjectMeta,
-	stsParams types.StatefulSetParameters,
+	stsParams model.StatefulSetParameters,
 	ownerDef metav1.OwnerReference,
-	initcontainerParams types.InitContainerParameters,
-	containerParams types.ContainerParameters,
+	initcontainerParams model.InitContainerParameters,
+	containerParams model.ContainerParameters,
 ) *appsv1.StatefulSet {
 
 	statefulset := &appsv1.StatefulSet{
@@ -146,10 +146,10 @@ func generateStatefulSet(
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
-					Containers: generateMainContainerDef(types.ContainerConfig{
+					Containers: generateMainContainerDef(model.ContainerConfig{
 						Name:            stsMeta.GetName(),
 						ContainerParams: containerParams,
-						Runtime: types.RuntimeCfg{
+						Runtime: model.RuntimeCfg{
 							ClusterModeEnabled:    stsParams.ClusterModeEnabled,
 							NodeConfVolumeEnabled: stsParams.NodeConfVolumeEnabled,
 						},
@@ -163,7 +163,7 @@ func generateStatefulSet(
 						generateEmptyVolume(consts.InitConfigVolumeName)},
 
 					// Init Container 설정
-					InitContainers: generateInitContainerDef(types.InitContainerConfig{
+					InitContainers: generateInitContainerDef(model.InitContainerConfig{
 						Role:                    containerParams.Role,
 						Name:                    stsMeta.GetName(),
 						InitContainerParameters: initcontainerParams,

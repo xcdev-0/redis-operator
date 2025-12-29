@@ -1,4 +1,4 @@
-package statefulsetservice
+package model
 
 import (
 	v1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
