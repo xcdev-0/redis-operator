@@ -86,13 +86,23 @@ func (s *StatefulSetService) GetStatefulSetReplicas(ctx context.Context, namespa
 }
 
 func GetStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace string, name string) (*appsv1.StatefulSet, error) {
-	statefulInfo, err := cl.AppsV1().StatefulSets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	statefulInfo, err := cl.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		log.FromContext(ctx).V(1).Info("Redis statefulset get action failed")
 		return nil, err
 	}
 	log.FromContext(ctx).V(1).Info("Redis statefulset get action was successful")
 	return statefulInfo, nil
+}
+
+// StatefulSetRequest는 CreateOrUpdateStateFul 함수에 전달되는 모든 매개변수를 그룹화합니다.
+type StatefulSetRequest struct {
+	Namespace           string
+	StsObjectMeta       metav1.ObjectMeta
+	OwnerReference      metav1.OwnerReference
+	StsParams           StatefulSetParameters
+	InitContainerParams InitContainerParameters
+	ContainerParams     ContainerParameters
 }
 
 func CreateOrUpdateStateFul(ctx context.Context,
@@ -122,7 +132,7 @@ func CreateOrUpdateStateFul(ctx context.Context,
 }
 
 func generateStatefulSet(
-	stsMeta metav1.ObjectMeta,
+	objectMeta metav1.ObjectMeta,
 	stsParams StatefulSetParameters,
 	ownerDef metav1.OwnerReference,
 	initcontainerParams InitContainerParameters,
@@ -131,24 +141,25 @@ func generateStatefulSet(
 
 	statefulset := &appsv1.StatefulSet{
 		TypeMeta:   k8smeta.GenerateTypeMeta("StatefulSet", "apps/v1"),
-		ObjectMeta: stsMeta,
+		ObjectMeta: objectMeta,
 		Spec: appsv1.StatefulSetSpec{
 			Selector: k8smeta.LabelSelectors(
-				k8smeta.ExtractStatefulSetSelectorLabels(stsMeta.GetLabels())),
-			ServiceName:                          fmt.Sprintf("%s-headless", stsMeta.Name),
+				k8smeta.ExtractStatefulSetSelectorLabels(objectMeta.GetLabels())),
+			ServiceName:                          fmt.Sprintf("%s-headless", objectMeta.Name),
 			Replicas:                             stsParams.Replicas,
 			UpdateStrategy:                       stsParams.UpdateStrategy,
 			PersistentVolumeClaimRetentionPolicy: stsParams.PersistentVolumeClaimRetentionPolicy,
 			MinReadySeconds:                      stsParams.MinReadySeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      stsMeta.GetLabels(),
-					Annotations: k8smeta.GenerateStatefulSetsAnots(stsMeta, stsParams.IgnoreAnnotations),
+					Labels:      objectMeta.GetLabels(),
+					Annotations: k8smeta.GenerateStatefulSetsAnots(objectMeta, stsParams.IgnoreAnnotations),
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
 					Containers: generateMainContainerDef(ContainerConfig{
-						Name:                   stsMeta.GetName(),
+						Name:                   objectMeta.GetName(),
+						EnableMetrics:          stsParams.EnableMetrics,
 						ContainerParams:        containerParams,
 						ClusterModeEnabled:     stsParams.ClusterModeEnabled,
 						NodeConfVolumeEnabled:  stsParams.NodeConfVolumeEnabled,
@@ -159,12 +170,12 @@ func generateStatefulSet(
 
 					// Init Container에서 생성하는 설정 파일을 저장할 볼륨
 					Volumes: []corev1.Volume{
-						generateEmptyVolume(consts.InitConfigVolumeName)},
+						generateEmptyVolume(consts.ConfigVolumeName)},
 
 					// Init Container 설정
 					InitContainers: generateInitContainerDef(InitContainerConfig{
 						Role:                    containerParams.Role,
-						Name:                    stsMeta.GetName(),
+						Name:                    objectMeta.GetName(),
 						InitContainerParameters: initcontainerParams,
 						ExternalConfig:          stsParams.ExternalConfig,
 						AdditionalVolumeMounts:  initcontainerParams.AdditionalMountPath,
@@ -180,16 +191,18 @@ func generateStatefulSet(
 	if stsParams.ExternalConfig != nil {
 		statefulset.Spec.Template.Spec.Volumes = append(
 			statefulset.Spec.Template.Spec.Volumes,
-			convertFromConfigmapToVolume(consts.ExternalInitConfigVolumeName, *stsParams.ExternalConfig)...)
+			convertFromConfigmapToVolume(consts.ExternalConfigVolumeName, *stsParams.ExternalConfig)...)
 	}
 
 	// 추가 볼륨 추가
-	if containerParams.AdditionalVolume != nil {
-		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes, containerParams.AdditionalVolume...)
+	if len(containerParams.AdditionalVolume) > 0 { // ???
+		statefulset.Spec.Template.Spec.Volumes = append(
+			statefulset.Spec.Template.Spec.Volumes,
+			containerParams.AdditionalVolume...)
 	}
 
 	// TLS 인증서 볼륨 추가
-	if containerParams.TLSConfig != nil {
+	if containerParams.IsTLSEnabled() {
 		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
 			corev1.Volume{
 				Name: consts.TLSCertsVolumeName,
@@ -200,46 +213,40 @@ func generateStatefulSet(
 	}
 
 	// ACL 설정 볼륨 추가 (Secret 또는 PVC)
+	// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
 	if containerParams.ACLConfig != nil {
-		if containerParams.ACLConfig.Secret != nil {
-			// ACL이 Secret에 저장된 경우
+		volumeName := containerParams.ACLConfig.GetVolumeName()
+		volumeSource := containerParams.ACLConfig.GetVolumeSource()
+		if volumeName != "" && volumeSource != nil {
 			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
 				corev1.Volume{
-					Name: consts.ACLSecretVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						Secret: containerParams.ACLConfig.Secret,
-					},
-				})
-		} else if containerParams.ACLConfig.PersistentVolumeClaimName != nil {
-			// ACL이 PVC에 저장된 경우
-			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
-				corev1.Volume{
-					Name: consts.ACLPVCVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: *containerParams.ACLConfig.PersistentVolumeClaimName,
-						},
-					},
+					Name:         volumeName,
+					VolumeSource: *volumeSource,
 				})
 		}
 	}
 
 	// 노드 설정 저장용 PVC 템플릿 설정
-	if containerParams.PersistenceEnabled != nil &&
-		*containerParams.PersistenceEnabled &&
+	if containerParams.IsPersistenceEnabled() &&
 		stsParams.ClusterModeEnabled &&
 		stsParams.NodeConfVolumeEnabled {
 		statefulset.Spec.VolumeClaimTemplates = append(
 			statefulset.Spec.VolumeClaimTemplates,
-			createPVCTemplate("node-conf", stsMeta, stsParams.NodeConfPersistentVolumeClaim))
+			createPVCTemplate(
+				consts.NodeConfVolumeName,
+				objectMeta,
+				stsParams.NodeConfPVC))
 	}
 
 	// 데이터 저장용 PVC 템플릿 설정
-	if containerParams.PersistenceEnabled != nil && *containerParams.PersistenceEnabled {
-		pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, stsMeta.GetName())
+	if containerParams.IsPersistenceEnabled() {
+		pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, objectMeta.GetName())
 		statefulset.Spec.VolumeClaimTemplates = append(
 			statefulset.Spec.VolumeClaimTemplates,
-			createPVCTemplate(pvcTplName, stsMeta, stsParams.PersistentVolumeClaim))
+			createPVCTemplate(
+				pvcTplName,
+				objectMeta,
+				stsParams.DataPVC))
 	}
 
 	// tolerations 설정

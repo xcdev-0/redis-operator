@@ -16,17 +16,78 @@ type tlsConfig struct {
 	Secret      *corev1.SecretVolumeSource
 }
 
+func (t *tlsConfig) GetCaKeyFile() string {
+	if t == nil {
+		return "ca.crt"
+	}
+	return t.CaKeyFile
+}
+
+func (t *tlsConfig) GetCertKeyFile() string {
+	if t == nil {
+		return "tls.crt"
+	}
+	return t.CertKeyFile
+}
+
+func (t *tlsConfig) GetKeyFile() string {
+	if t == nil {
+		return "tls.key"
+	}
+	return t.KeyFile
+}
+
 type aclConfig struct {
 	Secret                    *corev1.SecretVolumeSource
 	PersistentVolumeClaimName *string
 }
 
+// GetVolumeName은 ACL 볼륨의 이름을 반환합니다.
+// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
+func (a *aclConfig) GetVolumeName() string {
+	if a == nil {
+		return ""
+	}
+	// Secret이 설정된 경우
+	if a.Secret != nil {
+		return consts.ACLSecretVolumeName
+	}
+	// PVC가 설정된 경우
+	if a.PersistentVolumeClaimName != nil {
+		return consts.ACLPVCVolumeName
+	}
+	return ""
+}
+
+// GetVolumeSource는 ACL 볼륨의 VolumeSource를 반환합니다.
+// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
+func (a *aclConfig) GetVolumeSource() *corev1.VolumeSource {
+	if a == nil {
+		return nil
+	}
+	// Secret이 설정된 경우
+	if a.Secret != nil {
+		return &corev1.VolumeSource{
+			Secret: a.Secret,
+		}
+	}
+	// PVC가 설정된 경우
+	if a.PersistentVolumeClaimName != nil {
+		return &corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: *a.PersistentVolumeClaimName,
+			},
+		}
+	}
+	return nil
+}
+
 type envConfig struct {
 	role               string
-	enabledPassword    *bool
-	secretName         *string
-	secretKey          *string
-	persistenceEnabled *bool
+	enabledPassword    bool
+	secretName         string
+	secretKey          string
+	persistenceEnabled bool
 	tlsConfig          *tlsConfig
 	aclConfig          *aclConfig
 	envVars            *[]corev1.EnvVar
@@ -51,14 +112,14 @@ func getEnvironmentVariables(cfg envConfig) []corev1.EnvVar {
 		})
 	}
 
-	// Redis 연결 주소 설정 (Sentinel과 일반 Redis 구분)
-	p := consts.RedisPort
+	// Redis 포트 설정
+	port := consts.RedisPort
 	if cfg.port != nil {
-		p = *cfg.port
+		port = *cfg.port
 	}
-	redisHost := "redisutils://localhost:" + strconv.Itoa(p)
 	envVars = append(envVars, corev1.EnvVar{
-		Name: consts.EnvRedisPort, Value: strconv.Itoa(p),
+		Name:  consts.EnvRedisPort,
+		Value: strconv.Itoa(port),
 	})
 
 	// TLS 환경 변수 추가
@@ -74,29 +135,29 @@ func getEnvironmentVariables(cfg envConfig) []corev1.EnvVar {
 		})
 	}
 
-	// Redis 연결 주소 환경 변수
+	// Redis 연결 주소 환경 변수 (포트 설정 후 주소 생성)
+	redisHost := "redis://localhost:" + strconv.Itoa(port)
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  consts.EnvRedisAddr,
-		Value: redisHost, // 예: redisutils://localhost:6379
+		Value: redisHost, // 예: redis://localhost:6379
 	})
 
 	// Redis 비밀번호 설정 (Secret에서 가져옴)
-	if cfg.enabledPassword != nil && *cfg.enabledPassword &&
-		cfg.secretName != nil && cfg.secretKey != nil {
+	if cfg.enabledPassword && cfg.secretName != "" && cfg.secretKey != "" {
 		envVars = append(envVars, corev1.EnvVar{
 			Name: consts.EnvRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: *cfg.secretName, // Secret 이름
+						Name: cfg.secretName, // Secret 이름
 					},
-					Key: *cfg.secretKey, // Secret 내 키 이름
+					Key: cfg.secretKey, // Secret 내 키 이름
 				},
 			},
 		})
 	}
 	// 데이터 영속성 활성화 여부
-	if cfg.persistenceEnabled != nil && *cfg.persistenceEnabled {
+	if cfg.persistenceEnabled {
 		envVars = append(envVars, corev1.EnvVar{Name: consts.EnvPersistenceEnabled, Value: "true"})
 	}
 
@@ -112,24 +173,16 @@ func getEnvironmentVariables(cfg envConfig) []corev1.EnvVar {
 
 	return envVars
 }
+
+// generateTLSEnvironmentVariables는 TLS 관련 환경 변수를 생성합니다.
+// TLS 모드 활성화, CA 인증서 경로, 서버 인증서 경로, 서버 개인키 경로를 설정합니다.
 func generateTLSEnvironmentVariables(tlsconfig *tlsConfig) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 	root := "/tls/" // TLS 인증서가 마운트된 경로
 
-	caCert := "ca.crt"
-	tlsCert := "tls.crt"
-	tlsCertKey := "tls.key"
-
-	// 사용자가 커스텀 파일명을 지정한 경우 사용
-	if tlsconfig.CaKeyFile != "" {
-		caCert = tlsconfig.CaKeyFile
-	}
-	if tlsconfig.CertKeyFile != "" {
-		tlsCert = tlsconfig.CertKeyFile
-	}
-	if tlsconfig.KeyFile != "" {
-		tlsCertKey = tlsconfig.KeyFile
-	}
+	caCert := tlsconfig.GetCaKeyFile()
+	tlsCert := tlsconfig.GetCertKeyFile()
+	tlsCertKey := tlsconfig.GetKeyFile()
 
 	// TLS 모드 활성화 환경 변수
 	envVars = append(envVars, corev1.EnvVar{
@@ -138,7 +191,7 @@ func generateTLSEnvironmentVariables(tlsconfig *tlsConfig) []corev1.EnvVar {
 	})
 	// CA 인증서 경로
 	envVars = append(envVars, corev1.EnvVar{
-		Name:  consts.EnvTLSCAKey,
+		Name:  consts.EnvTLSCACert,
 		Value: path.Join(root, caCert), // 예: /tls/ca.crt
 	})
 	// 서버 인증서 경로

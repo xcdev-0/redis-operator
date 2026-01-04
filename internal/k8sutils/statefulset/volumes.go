@@ -17,17 +17,17 @@ func generateEmptyVolume(volumeName string) corev1.Volume {
 	}
 }
 
-func generateInitConfigVolumeMount(volumeName string) corev1.VolumeMount {
+func generateConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
-		MountPath: "/etc/redisutils",
+		MountPath: "/etc/redis",
 	}
 }
 
 func generateExternalConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
-		MountPath: "/etc/redisutils/external.conf.d",
+		MountPath: "/etc/redis/external.conf.d",
 	}
 }
 
@@ -60,9 +60,9 @@ type volumeMountParams struct {
 func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
-	if p.ClusterModeEnabled && p.NodeConfVolumeEnabled {
+	if p.ClusterModeEnabled && p.NodeConfVolumeEnabled && p.Persistence {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "node-conf",
+			Name:      consts.NodeConfVolumeName,
 			MountPath: "/node-conf",
 		})
 	}
@@ -76,32 +76,31 @@ func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
 
 	if p.TLS != nil {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "tls-certs",
+			Name:      consts.TLSCertsVolumeName,
 			ReadOnly:  true,   // 읽기 전용 (보안)
 			MountPath: "/tls", // TLS 인증서 경로
 		})
 	}
 	if p.ACL != nil {
-		volumeName := "acl-secret"
-		if p.ACL.PersistentVolumeClaimName != nil {
-			volumeName = "acl-pvc"
+		volumeName := p.ACL.GetVolumeName()
+		if volumeName != "" {
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      volumeName,
+				MountPath: "/etc/redis/user.acl",
+				SubPath:   "user.acl",
+			})
 		}
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      volumeName,
-			MountPath: "/etc/redisutils/user.acl",
-			SubPath:   "user.acl",
-		})
 	}
 
 	// 유저가 제공한 컨피그맵을 마운트
 	// 컨피그맵 -> external-config 볼륨 이 볼륨을 마운트
 	if p.ExternalConfig != nil {
 		mounts = append(mounts,
-			generateExternalConfigVolumeMount(consts.ExternalInitConfigVolumeName))
+			generateExternalConfigVolumeMount(consts.ExternalConfigVolumeName))
 	}
 
 	// Init Container에서 생성한 설정 파일 볼륨 마운트
-	mounts = append(mounts, generateInitConfigVolumeMount(consts.InitConfigVolumeName))
+	mounts = append(mounts, generateConfigVolumeMount(consts.ConfigVolumeName))
 
 	// 추가 볼륨 마운트
 	mounts = append(mounts, p.AdditionalVolumeMounts...)
@@ -109,32 +108,32 @@ func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
 	return mounts
 }
 
-func createPVCTemplate(volumeName string, stsMeta metav1.ObjectMeta, storageSpec corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {
-	pvcTemplate := storageSpec // 복사후 필요한 필드만 설정
+func createPVCTemplate(volumeName string, objectMeta metav1.ObjectMeta, pvc corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {
+	pvcTemplate := pvc // 복사후 필요한 필드만 설정
 
 	// 템플릿이므로 생성 시간 초기화
 	pvcTemplate.CreationTimestamp = metav1.Time{}
 	// 볼륨 이름 설정
 	pvcTemplate.Name = volumeName
 	// StatefulSet과 동일한 라벨
-	pvcTemplate.Labels = stsMeta.GetLabels()
+	pvcTemplate.Labels = objectMeta.GetLabels()
 	// StatefulSet과 동일한 어노테이션
-	pvcTemplate.Annotations = k8smeta.GenerateStatefulSetsAnots(stsMeta, nil)
+	pvcTemplate.Annotations = k8smeta.GenerateStatefulSetsAnots(objectMeta, nil)
 	// AccessMode가 지정되지 않으면 기본값으로 ReadWriteOnce 사용
-	if storageSpec.Spec.AccessModes == nil {
+	if pvc.Spec.AccessModes == nil {
 		pvcTemplate.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 	} else {
-		pvcTemplate.Spec.AccessModes = storageSpec.Spec.AccessModes
+		pvcTemplate.Spec.AccessModes = pvc.Spec.AccessModes
 	}
 	// VolumeMode 설정 (Filesystem 또는 Block)
 	pvcVolumeMode := corev1.PersistentVolumeFilesystem
-	if storageSpec.Spec.VolumeMode != nil {
-		pvcVolumeMode = *storageSpec.Spec.VolumeMode
+	if pvc.Spec.VolumeMode != nil {
+		pvcVolumeMode = *pvc.Spec.VolumeMode
 	}
 	pvcTemplate.Spec.VolumeMode = &pvcVolumeMode
 	// 스토리지 크기
-	pvcTemplate.Spec.Resources = storageSpec.Spec.Resources
+	pvcTemplate.Spec.Resources = pvc.Spec.Resources
 	// 특정 PV 선택용
-	pvcTemplate.Spec.Selector = storageSpec.Spec.Selector
+	pvcTemplate.Spec.Selector = pvc.Spec.Selector
 	return pvcTemplate
 }

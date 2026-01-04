@@ -4,17 +4,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
-
-// StatefulSetRequest는 CreateOrUpdateStateFul 함수에 전달되는 모든 매개변수를 그룹화합니다.
-type StatefulSetRequest struct {
-	Namespace           string
-	StsObjectMeta       metav1.ObjectMeta
-	OwnerReference      metav1.OwnerReference
-	StsParams           StatefulSetParameters
-	InitContainerParams InitContainerParameters
-	ContainerParams     ContainerParameters
-}
 
 // StatefulSetParameters는 StatefulSet 생성에 필요한 모든 파라미터를 담는 구조체입니다.
 // 이 구조체는 StatefulSet의 스펙을 정의하는 데 사용됩니다.
@@ -30,8 +21,8 @@ type StatefulSetParameters struct {
 	Affinity                             *corev1.Affinity                                        // Pod 어피니티 규칙 (노드/Pod 간 선호도)
 	Tolerations                          *[]corev1.Toleration                                    // Pod 톨러레이션 (테인트 허용)
 	EnableMetrics                        bool                                                    // Redis Exporter 메트릭 활성화 여부
-	PersistentVolumeClaim                corev1.PersistentVolumeClaim                            // 데이터 저장용 PVC 템플릿
-	NodeConfPersistentVolumeClaim        corev1.PersistentVolumeClaim                            // 노드 설정 저장용 PVC 템플릿 (클러스터 모드)
+	DataPVC                              corev1.PersistentVolumeClaim                            // 데이터 저장용 PVC 템플릿
+	NodeConfPVC                          corev1.PersistentVolumeClaim                            // 노드 설정 저장용 PVC 템플릿 (클러스터 모드)
 	ImagePullSecrets                     *[]corev1.LocalObjectReference                          // 이미지 풀 시크릿 (프라이빗 레지스트리용)
 	ExternalConfig                       *string                                                 // 외부 ConfigMap 이름 (추가 Redis 설정)
 	ServiceAccountName                   *string                                                 // Pod에 사용할 ServiceAccount 이름
@@ -70,11 +61,39 @@ type ContainerParameters struct {
 	HostPort                *int                         // 호스트 포트 (HostNetwork 사용 시)
 }
 
+// IsPersistenceEnabled는 데이터 영속성이 활성화되어 있는지 확인합니다.
+// nil인 경우 기본값으로 true를 반환합니다.
 func (c *ContainerParameters) IsPersistenceEnabled() bool {
 	if c == nil || c.PersistenceEnabled == nil {
-		return false // 또는 기본값 true, 정책에 맞게
+		return true // 기본값: 영속성 활성화
 	}
 	return *c.PersistenceEnabled
+}
+
+// IsAuthEnabled는 Redis 인증이 활성화되어 있는지 확인합니다.
+func (c *ContainerParameters) IsAuthEnabled() bool {
+	return c.EnabledPassword != nil && *c.EnabledPassword
+}
+
+// IsTLSEnabled는 TLS가 활성화되어 있는지 확인합니다.
+func (c *ContainerParameters) IsTLSEnabled() bool {
+	return c.TLSConfig != nil
+}
+
+// BuildEnvConfig는 ContainerParameters에서 envConfig를 생성합니다.
+func (c *ContainerParameters) BuildEnvConfig(envVars []corev1.EnvVar, clusterVersion *string) envConfig {
+	return envConfig{
+		role:               c.Role,
+		enabledPassword:    c.IsAuthEnabled(),
+		secretName:         ptr.Deref(c.SecretName, ""),
+		secretKey:          ptr.Deref(c.SecretKey, ""),
+		persistenceEnabled: c.IsPersistenceEnabled(),
+		tlsConfig:          c.TLSConfig,
+		aclConfig:          c.ACLConfig,
+		envVars:            &envVars,
+		port:               c.Port,
+		clusterVersion:     clusterVersion,
+	}
 }
 
 type InitContainerParameters struct {
@@ -90,4 +109,13 @@ type InitContainerParameters struct {
 	AdditionalVolume      []corev1.Volume              // 추가 볼륨
 	AdditionalMountPath   []corev1.VolumeMount         // 추가 볼륨 마운트 경로
 	SecurityContext       *corev1.SecurityContext      // Init Container 보안 컨텍스트
+}
+
+// IsPersistenceEnabled는 Init Container의 데이터 영속성이 활성화되어 있는지 확인합니다.
+// nil인 경우 기본값으로 false를 반환합니다.
+func (i *InitContainerParameters) IsPersistenceEnabled() bool {
+	if i == nil || i.PersistenceEnabled == nil {
+		return false // 기본값: 영속성 비활성화
+	}
+	return *i.PersistenceEnabled
 }
