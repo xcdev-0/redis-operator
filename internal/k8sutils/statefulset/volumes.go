@@ -3,7 +3,7 @@ package statefulsetservice
 import (
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/model"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/internal/stsmodel"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,14 +21,14 @@ func generateEmptyVolume(volumeName string) corev1.Volume {
 func generateInitConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
-		MountPath: "/etc/redis",
+		MountPath: "/etc/redistutils",
 	}
 }
 
 func generateExternalConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
-		MountPath: "/etc/redis/external.conf.d",
+		MountPath: "/etc/redistutils/external.conf.d",
 	}
 }
 
@@ -47,7 +47,7 @@ func convertFromConfigmapToVolume(volumeName string, configMapName string) []cor
 	}
 }
 
-func getVolumeMount(p model.VolumeMountParams) []corev1.VolumeMount {
+func getVolumeMount(p stsmodel.VolumeMountParams) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
 	if p.Runtime.ClusterModeEnabled && p.Runtime.NodeConfVolumeEnabled {
@@ -78,7 +78,7 @@ func getVolumeMount(p model.VolumeMountParams) []corev1.VolumeMount {
 		}
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      volumeName,
-			MountPath: "/etc/redis/user.acl",
+			MountPath: "/etc/redistutils/user.acl",
 			SubPath:   "user.acl",
 		})
 	}

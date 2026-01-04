@@ -5,13 +5,13 @@ import (
 
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/model"
+	stsmodel2 "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/internal/stsmodel"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
 
 func generateInitContainerDef(
-	cfg model.InitContainerConfig,
+	cfg stsmodel2.InitContainerConfig,
 ) []corev1.Container {
 
 	// role := cfg.Role
@@ -56,7 +56,7 @@ func generateInitContainerDef(
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/operator", "agent"},
 		SecurityContext: initcontainerParams.SecurityContext,
-		Env: getEnvironmentVariables(model.EnvConfig{
+		Env: getEnvironmentVariables(stsmodel2.EnvConfig{
 			Role:               containerParams.Role,
 			EnabledPassword:    containerParams.EnabledPassword,
 			SecretName:         containerParams.SecretName,
@@ -103,7 +103,7 @@ func generateInitContainerDef(
 	return containers
 }
 
-func generateMainContainerDef(cfg model.ContainerConfig) []corev1.Container {
+func generateMainContainerDef(cfg stsmodel2.ContainerConfig) []corev1.Container {
 	name := cfg.Name
 	additonalVolumeMounts := cfg.AdditionalVolumeMounts
 	externalConfig := cfg.ExternalConfig
@@ -116,11 +116,11 @@ func generateMainContainerDef(cfg model.ContainerConfig) []corev1.Container {
 	enableAuth := containersParams.EnabledPassword != nil && *containersParams.EnabledPassword // 인증 활성화 여부
 
 	// 볼륨 마운트
-	volumeMounts := getVolumeMount(model.VolumeMountParams{
+	volumeMounts := getVolumeMount(stsmodel2.VolumeMountParams{
 		Name:                   name,
 		AdditionalVolumeMounts: additonalVolumeMounts,
 		ExternalConfig:         externalConfig,
-		Persistence:            model.PersistenceCfg{Enabled: containersParams.PersistenceEnabled},
+		Persistence:            stsmodel2.PersistenceCfg{Enabled: containersParams.PersistenceEnabled},
 		Runtime:                runtime,
 		TLS:                    containersParams.TLSConfig,
 		ACL:                    containersParams.ACLConfig,
@@ -137,7 +137,7 @@ func generateMainContainerDef(cfg model.ContainerConfig) []corev1.Container {
 			ImagePullPolicy: containersParams.ImagePullPolicy,
 			SecurityContext: containersParams.SecurityContext,
 			// 환경 변수 생성 (Redis 설정, 인증, TLS 등)
-			Env: getEnvironmentVariables(model.EnvConfig{
+			Env: getEnvironmentVariables(stsmodel2.EnvConfig{
 				Role:               containersParams.Role,
 				EnabledPassword:    containersParams.EnabledPassword,
 				SecretName:         containersParams.SecretName,
@@ -155,8 +155,8 @@ func generateMainContainerDef(cfg model.ContainerConfig) []corev1.Container {
 		},
 	}
 
-	containerDefinition[0].Command = []string{"redis-server"}
-	containerDefinition[0].Args = []string{"/etc/redis/redis.conf"}
+	containerDefinition[0].Command = []string{"redistutils-server"}
+	containerDefinition[0].Args = []string{"/etc/redistutils/redistutils.conf"}
 
 	return containerDefinition
 }

@@ -1,4 +1,4 @@
-package redis
+package redistutils
 
 import "k8s.io/client-go/kubernetes"
 
