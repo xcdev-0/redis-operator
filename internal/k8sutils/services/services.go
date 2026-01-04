@@ -17,15 +17,15 @@ import (
 
 // ServiceOptions contains all options for creating or updating a Kubernetes service
 type ServiceOptions struct {
-	Namespace            string                // Kubernetes namespace where the service will be created
-	ServiceObjectMeta    metav1.ObjectMeta     // Service metadata (name, labels, annotations)
-	OwnerRef             metav1.OwnerReference // Owner reference for garbage collection
-	ExporterPortProvider ExporterPortProvider  // Function to get Redis exporter port if enabled
-	Headless             bool                  // Whether to create a headless service (ClusterIP: None)
-	ServiceType          string                // Service type: "ClusterIP", "NodePort", or "LoadBalancer"
-	ClientPort           int                   // Redis client port number
-	K8sClient            kubernetes.Interface  // Kubernetes client for API operations
-	ExtraPorts           []corev1.ServicePort  // Additional ports to expose (e.g., Redis bus port)
+	Namespace            string                       // Kubernetes namespace where the service will be created
+	ServiceObjectMeta    metav1.ObjectMeta            // Service metadata (name, labels, annotations)
+	OwnerRef             metav1.OwnerReference        // Owner reference for garbage collection
+	ExporterPortProvider k8smeta.ExporterPortProvider // Function to get Redis exporter port if enabled
+	Headless             bool                         // Whether to create a headless service (ClusterIP: None)
+	ServiceType          string                       // Service type: "ClusterIP", "NodePort", or "LoadBalancer"
+	ClientPort           int                          // Redis client port number
+	K8sClient            kubernetes.Interface         // Kubernetes client for API operations
+	ExtraPorts           []corev1.ServicePort         // Additional ports to expose (e.g., Redis bus port)
 }
 
 func generateServiceDef(opts ServiceOptions) *corev1.Service {
@@ -133,7 +133,7 @@ func CreateOrUpdateService(ctx context.Context, opts ServiceOptions) error {
 		if errors.IsNotFound(err) {
 			// Set last applied annotation for future comparisons
 			if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(serviceDef); err != nil {
-				log.FromContext(ctx).Error(err, "Unable to patch redis service with compare annotations")
+				log.FromContext(ctx).Error(err, "Unable to patch redisutils service with compare annotations")
 			}
 			return createService(ctx, opts.K8sClient, opts.Namespace, serviceDef)
 		}
@@ -164,7 +164,7 @@ func patchService(ctx context.Context, storedService *corev1.Service, newService
 		patch.IgnoreField("apiVersion"), // apiVersion은 항상 "v1"이므로 비교에서 제외
 	)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Unable to patch redis service with comparison object")
+		log.FromContext(ctx).Error(err, "Unable to patch redisutils service with comparison object")
 		return err
 	}
 
@@ -180,7 +180,7 @@ func patchService(ctx context.Context, storedService *corev1.Service, newService
 		// 현재 설정을 annotation에 저장하여 다음 reconcile 시 변경사항 감지에 사용
 		// 이는 kubectl apply의 last-applied-configuration과 유사한 동작입니다
 		if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(newService); err != nil {
-			log.FromContext(ctx).Error(err, "Unable to patch redis service with comparison object")
+			log.FromContext(ctx).Error(err, "Unable to patch redisutils service with comparison object")
 			return err
 		}
 		log.FromContext(ctx).V(1).Info("Syncing Redis service with defined properties")
