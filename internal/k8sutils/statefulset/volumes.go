@@ -1,9 +1,8 @@
-package statefulsetservice
+package statefulset
 
 import (
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/internal/stsmodel"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,14 +20,14 @@ func generateEmptyVolume(volumeName string) corev1.Volume {
 func generateInitConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
-		MountPath: "/etc/redistutils",
+		MountPath: "/etc/redisutils",
 	}
 }
 
 func generateExternalConfigVolumeMount(volumeName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      volumeName,
-		MountPath: "/etc/redistutils/external.conf.d",
+		MountPath: "/etc/redisutils/external.conf.d",
 	}
 }
 
@@ -47,17 +46,28 @@ func convertFromConfigmapToVolume(volumeName string, configMapName string) []cor
 	}
 }
 
-func getVolumeMount(p stsmodel.VolumeMountParams) []corev1.VolumeMount {
+type volumeMountParams struct {
+	Name                   string
+	AdditionalVolumeMounts []corev1.VolumeMount
+	Persistence            bool
+	ClusterModeEnabled     bool
+	NodeConfVolumeEnabled  bool
+	ExternalConfig         *string
+	TLS                    *tlsConfig
+	ACL                    *aclConfig
+}
+
+func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
-	if p.Runtime.ClusterModeEnabled && p.Runtime.NodeConfVolumeEnabled {
+	if p.ClusterModeEnabled && p.NodeConfVolumeEnabled {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "node-conf",
 			MountPath: "/node-conf",
 		})
 	}
 
-	if p.Persistence.Enabled != nil && *p.Persistence.Enabled {
+	if p.Persistence {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, p.Name),
 			MountPath: "/data",
@@ -73,12 +83,12 @@ func getVolumeMount(p stsmodel.VolumeMountParams) []corev1.VolumeMount {
 	}
 	if p.ACL != nil {
 		volumeName := "acl-secret"
-		if p.ACL.PersistentVolumeClaim != nil {
+		if p.ACL.PersistentVolumeClaimName != nil {
 			volumeName = "acl-pvc"
 		}
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      volumeName,
-			MountPath: "/etc/redistutils/user.acl",
+			MountPath: "/etc/redisutils/user.acl",
 			SubPath:   "user.acl",
 		})
 	}

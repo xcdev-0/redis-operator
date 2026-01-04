@@ -1,17 +1,26 @@
-package statefulsetservice
+package statefulset
 
 import (
 	"fmt"
 
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	stsmodel2 "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/internal/stsmodel"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
 
+type InitContainerConfig struct {
+	Role                    string
+	Name                    string
+	InitContainerParameters InitContainerParameters
+	AdditionalVolumeMounts  []corev1.VolumeMount
+	ExternalConfig          *string
+	ContainerParameters     ContainerParameters
+	ClusterVersion          *string
+}
+
 func generateInitContainerDef(
-	cfg stsmodel2.InitContainerConfig,
+	cfg InitContainerConfig,
 ) []corev1.Container {
 
 	// role := cfg.Role
@@ -50,23 +59,43 @@ func generateInitContainerDef(
 			generateExternalConfigVolumeMount(consts.ExternalInitConfigVolumeName))
 	}
 
+	// TLS 설정 변환 (nil 체크)
+	var tlsCfg *tlsConfig
+	if containerParams.TLSConfig != nil {
+		tlsCfg = &tlsConfig{
+			CaKeyFile:   containerParams.TLSConfig.CaKeyFile,
+			CertKeyFile: containerParams.TLSConfig.CertKeyFile,
+			KeyFile:     containerParams.TLSConfig.KeyFile,
+			Secret:      containerParams.TLSConfig.Secret,
+		}
+	}
+
+	// ACL 설정 변환 (nil 체크)
+	var aclCfg *aclConfig
+	if containerParams.ACLConfig != nil {
+		aclCfg = &aclConfig{
+			Secret:                    containerParams.ACLConfig.Secret,
+			PersistentVolumeClaimName: containerParams.ACLConfig.PersistentVolumeClaimName,
+		}
+	}
+
 	container := corev1.Container{
 		Name:            "init-config",
 		Image:           envs.GetInitContainerImage(),
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/operator", "agent"},
 		SecurityContext: initcontainerParams.SecurityContext,
-		Env: getEnvironmentVariables(stsmodel2.EnvConfig{
-			Role:               containerParams.Role,
-			EnabledPassword:    containerParams.EnabledPassword,
-			SecretName:         containerParams.SecretName,
-			SecretKey:          containerParams.SecretKey,
-			PersistenceEnabled: containerParams.PersistenceEnabled,
-			TLSConfig:          containerParams.TLSConfig,
-			ACLConfig:          containerParams.ACLConfig,
-			EnvVars:            &envVars,
-			Port:               containerParams.Port,
-			ClusterVersion:     clusterVersion,
+		Env: getEnvironmentVariables(envConfig{
+			role:               containerParams.Role,
+			enabledPassword:    containerParams.EnabledPassword,
+			secretName:         containerParams.SecretName,
+			secretKey:          containerParams.SecretKey,
+			persistenceEnabled: containerParams.PersistenceEnabled,
+			tlsConfig:          tlsCfg,
+			aclConfig:          aclCfg,
+			envVars:            &envVars,
+			port:               containerParams.Port,
+			clusterVersion:     clusterVersion,
 		}),
 		VolumeMounts: VolumeMounts,
 	}
@@ -103,11 +132,22 @@ func generateInitContainerDef(
 	return containers
 }
 
-func generateMainContainerDef(cfg stsmodel2.ContainerConfig) []corev1.Container {
+type ContainerConfig struct {
+	Name                   string
+	AdditionalVolumeMounts []corev1.VolumeMount
+	ExternalConfig         *string
+	ClusterModeEnabled     bool
+	NodeConfVolumeEnabled  bool
+	ClusterVersion         *string
+	ContainerParams        ContainerParameters
+}
+
+func generateMainContainerDef(cfg ContainerConfig) []corev1.Container {
 	name := cfg.Name
 	additonalVolumeMounts := cfg.AdditionalVolumeMounts
 	externalConfig := cfg.ExternalConfig
-	runtime := cfg.Runtime
+	clusterModeEnabled := cfg.ClusterModeEnabled
+	nodeConfVolumeEnabled := cfg.NodeConfVolumeEnabled
 	clusterVersion := cfg.ClusterVersion
 	containersParams := cfg.ContainerParams
 
@@ -115,15 +155,36 @@ func generateMainContainerDef(cfg stsmodel2.ContainerConfig) []corev1.Container 
 	enableTLS := containersParams.TLSConfig != nil                                             // TLS 활성화 여부
 	enableAuth := containersParams.EnabledPassword != nil && *containersParams.EnabledPassword // 인증 활성화 여부
 
+	// TLS 설정 (nil 체크)
+	var tls *tlsConfig
+	if containersParams.TLSConfig != nil {
+		tls = &tlsConfig{
+			CaKeyFile:   containersParams.TLSConfig.CaKeyFile,
+			CertKeyFile: containersParams.TLSConfig.CertKeyFile,
+			KeyFile:     containersParams.TLSConfig.KeyFile,
+			Secret:      containersParams.TLSConfig.Secret,
+		}
+	}
+
+	// ACL 설정 (nil 체크)
+	var acl *aclConfig
+	if containersParams.ACLConfig != nil {
+		acl = &aclConfig{
+			Secret:                    containersParams.ACLConfig.Secret,
+			PersistentVolumeClaimName: containersParams.ACLConfig.PersistentVolumeClaimName,
+		}
+	}
+
 	// 볼륨 마운트
-	volumeMounts := getVolumeMount(stsmodel2.VolumeMountParams{
+	volumeMounts := getVolumeMount(volumeMountParams{
 		Name:                   name,
 		AdditionalVolumeMounts: additonalVolumeMounts,
 		ExternalConfig:         externalConfig,
-		Persistence:            stsmodel2.PersistenceCfg{Enabled: containersParams.PersistenceEnabled},
-		Runtime:                runtime,
-		TLS:                    containersParams.TLSConfig,
-		ACL:                    containersParams.ACLConfig,
+		Persistence:            containersParams.IsPersistenceEnabled(),
+		ClusterModeEnabled:     clusterModeEnabled,
+		NodeConfVolumeEnabled:  nodeConfVolumeEnabled,
+		TLS:                    tls,
+		ACL:                    acl,
 	})
 
 	readinessProbe := getProbeInfo(containersParams.ReadinessProbe, enableTLS, enableAuth)
@@ -137,17 +198,17 @@ func generateMainContainerDef(cfg stsmodel2.ContainerConfig) []corev1.Container 
 			ImagePullPolicy: containersParams.ImagePullPolicy,
 			SecurityContext: containersParams.SecurityContext,
 			// 환경 변수 생성 (Redis 설정, 인증, TLS 등)
-			Env: getEnvironmentVariables(stsmodel2.EnvConfig{
-				Role:               containersParams.Role,
-				EnabledPassword:    containersParams.EnabledPassword,
-				SecretName:         containersParams.SecretName,
-				SecretKey:          containersParams.SecretKey,
-				PersistenceEnabled: containersParams.PersistenceEnabled,
-				TLSConfig:          containersParams.TLSConfig,
-				ACLConfig:          containersParams.ACLConfig,
-				EnvVars:            containersParams.EnvVars,
-				Port:               containersParams.Port,
-				ClusterVersion:     clusterVersion,
+			Env: getEnvironmentVariables(envConfig{
+				role:               containersParams.Role,
+				enabledPassword:    containersParams.EnabledPassword,
+				secretName:         containersParams.SecretName,
+				secretKey:          containersParams.SecretKey,
+				persistenceEnabled: containersParams.PersistenceEnabled,
+				tlsConfig:          tls,
+				aclConfig:          acl,
+				envVars:            containersParams.EnvVars,
+				port:               containersParams.Port,
+				clusterVersion:     clusterVersion,
 			}),
 			ReadinessProbe: readinessProbe,
 			LivenessProbe:  livenessProbe,
@@ -155,8 +216,8 @@ func generateMainContainerDef(cfg stsmodel2.ContainerConfig) []corev1.Container 
 		},
 	}
 
-	containerDefinition[0].Command = []string{"redistutils-server"}
-	containerDefinition[0].Args = []string{"/etc/redistutils/redistutils.conf"}
+	containerDefinition[0].Command = []string{"redisutils-server"}
+	containerDefinition[0].Args = []string{"/etc/redisutils/redisutils.conf"}
 
 	return containerDefinition
 }

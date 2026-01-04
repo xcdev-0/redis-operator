@@ -1,50 +1,73 @@
-package statefulsetservice
+package statefulset
 
 import (
 	"path"
 	"sort"
 	"strconv"
 
-	v1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/internal/stsmodel"
 	corev1 "k8s.io/api/core/v1"
 )
 
+type tlsConfig struct {
+	CaKeyFile   string
+	CertKeyFile string
+	KeyFile     string
+	Secret      *corev1.SecretVolumeSource
+}
+
+type aclConfig struct {
+	Secret                    *corev1.SecretVolumeSource
+	PersistentVolumeClaimName *string
+}
+
+type envConfig struct {
+	role               string
+	enabledPassword    *bool
+	secretName         *string
+	secretKey          *string
+	persistenceEnabled *bool
+	tlsConfig          *tlsConfig
+	aclConfig          *aclConfig
+	envVars            *[]corev1.EnvVar
+	port               *int
+	clusterVersion     *string
+}
+
 // getEnvironmentVariables는 Redis 컨테이너에 필요한 모든 환경 변수를 생성합니다.
 // 이 환경 변수들은 Redis 설정, 인증, TLS, ACL 등을 제어하는 데 사용됩니다.
-func getEnvironmentVariables(cfg stsmodel.EnvConfig) []corev1.EnvVar {
+func getEnvironmentVariables(cfg envConfig) []corev1.EnvVar {
 	// 기본 환경 변수: Redis 역할 설정
 	envVars := []corev1.EnvVar{
-		{Name: consts.EnvRedisServerMode, Value: cfg.Role}, // 서버 모드 (leader, follower, sentinel, cluster 등)
-		{Name: consts.EnvRedisSetupMode, Value: cfg.Role},  // 설정 모드 (Init Container에서 사용)
+		{Name: consts.EnvRedisServerMode, Value: cfg.role}, // 서버 모드 (leader, follower, sentinel, cluster 등)
+		{Name: consts.EnvRedisSetupMode, Value: cfg.role},  // 설정 모드 (Init Container에서 사용)
 	}
 
 	// Redis 클러스터 버전 설정
-	if cfg.ClusterVersion != nil {
+	if cfg.clusterVersion != nil {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  consts.EnvRedisMajorVersion,
-			Value: *cfg.ClusterVersion, // 예: "7", "6"
+			Value: *cfg.clusterVersion, // 예: "7", "6"
 		})
 	}
 
 	// Redis 연결 주소 설정 (Sentinel과 일반 Redis 구분)
 	p := consts.RedisPort
-	if cfg.Port != nil {
-		p = *cfg.Port
+	if cfg.port != nil {
+		p = *cfg.port
 	}
-	redisHost := "redistutils://localhost:" + strconv.Itoa(p)
+	redisHost := "redisutils://localhost:" + strconv.Itoa(p)
 	envVars = append(envVars, corev1.EnvVar{
 		Name: consts.EnvRedisPort, Value: strconv.Itoa(p),
 	})
 
 	// TLS 환경 변수 추가
-	if cfg.TLSConfig != nil {
-		envVars = append(envVars, generateTLSEnvironmentVariables(cfg.TLSConfig)...)
+	if cfg.tlsConfig != nil {
+		envVars = append(envVars, generateTLSEnvironmentVariables(cfg.tlsConfig)...)
 	}
 
 	// ACL 모드 활성화
-	if cfg.ACLConfig != nil {
+	if cfg.aclConfig != nil {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  consts.EnvACLMode,
 			Value: "true", // ACL 사용 여부
@@ -54,31 +77,32 @@ func getEnvironmentVariables(cfg stsmodel.EnvConfig) []corev1.EnvVar {
 	// Redis 연결 주소 환경 변수
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  consts.EnvRedisAddr,
-		Value: redisHost, // 예: redistutils://localhost:6379
+		Value: redisHost, // 예: redisutils://localhost:6379
 	})
 
 	// Redis 비밀번호 설정 (Secret에서 가져옴)
-	if cfg.EnabledPassword != nil && *cfg.EnabledPassword {
+	if cfg.enabledPassword != nil && *cfg.enabledPassword &&
+		cfg.secretName != nil && cfg.secretKey != nil {
 		envVars = append(envVars, corev1.EnvVar{
 			Name: consts.EnvRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: *cfg.SecretName, // Secret 이름
+						Name: *cfg.secretName, // Secret 이름
 					},
-					Key: *cfg.SecretKey, // Secret 내 키 이름
+					Key: *cfg.secretKey, // Secret 내 키 이름
 				},
 			},
 		})
 	}
 	// 데이터 영속성 활성화 여부
-	if cfg.PersistenceEnabled != nil && *cfg.PersistenceEnabled {
+	if cfg.persistenceEnabled != nil && *cfg.persistenceEnabled {
 		envVars = append(envVars, corev1.EnvVar{Name: consts.EnvPersistenceEnabled, Value: "true"})
 	}
 
 	// 추가 환경 변수 병합
-	if cfg.EnvVars != nil {
-		envVars = append(envVars, *cfg.EnvVars...)
+	if cfg.envVars != nil {
+		envVars = append(envVars, *cfg.envVars...)
 	}
 
 	// 환경 변수를 이름순으로 정렬 (일관성 유지)
@@ -88,7 +112,7 @@ func getEnvironmentVariables(cfg stsmodel.EnvConfig) []corev1.EnvVar {
 
 	return envVars
 }
-func generateTLSEnvironmentVariables(tlsconfig *v1beta2.TLSConfig) []corev1.EnvVar {
+func generateTLSEnvironmentVariables(tlsconfig *tlsConfig) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 	root := "/tls/" // TLS 인증서가 마운트된 경로
 

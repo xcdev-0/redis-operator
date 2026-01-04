@@ -1,12 +1,10 @@
-package statefulsetservice
+package statefulset
 
 import (
 	"context"
 	"fmt"
 
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/model"
-	stsmodel2 "github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice/internal/stsmodel"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -97,8 +95,10 @@ func GetStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace stri
 	return statefulInfo, nil
 }
 
-func CreateOrUpdateStateFul(ctx context.Context, req *model.StatefulSetRequest) error {
-	storedStateful, err := GetStatefulSet(ctx, req.KubeClient, req.Namespace, req.StsObjectMeta.Name)
+func CreateOrUpdateStateFul(ctx context.Context,
+	kubeClient kubernetes.Interface,
+	req *StatefulSetRequest) error {
+	storedStateful, err := GetStatefulSet(ctx, kubeClient, req.Namespace, req.StsObjectMeta.Name)
 	statefulSetDef := generateStatefulSet(
 		req.StsObjectMeta,
 		req.StsParams,
@@ -110,23 +110,23 @@ func CreateOrUpdateStateFul(ctx context.Context, req *model.StatefulSetRequest) 
 		if apierrors.IsNotFound(err) {
 			// StatefulSet이 존재하지 않는 경우에만 어노테이션 설정
 			if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(statefulSetDef); err != nil {
-				log.FromContext(ctx).Error(err, "Unable to patch redistutils statefulset with comparison object")
+				log.FromContext(ctx).Error(err, "Unable to patch redisutils statefulset with comparison object")
 				return err
 			}
-			return createStatefulSet(ctx, req.KubeClient, req.Namespace, statefulSetDef)
+			return createStatefulSet(ctx, kubeClient, req.Namespace, statefulSetDef)
 		}
 		// 다른 에러는 바로 반환
 		return err
 	}
-	return patchStatefulSet(ctx, storedStateful, statefulSetDef, req.Namespace, req.StsParams.RecreateStatefulSet, req.StsParams.RecreateStatefulsetStrategy, req.KubeClient)
+	return patchStatefulSet(ctx, storedStateful, statefulSetDef, req.Namespace, req.StsParams.RecreateStatefulSet, req.StsParams.RecreateStatefulsetStrategy, kubeClient)
 }
 
 func generateStatefulSet(
 	stsMeta metav1.ObjectMeta,
-	stsParams model.StatefulSetParameters,
+	stsParams StatefulSetParameters,
 	ownerDef metav1.OwnerReference,
-	initcontainerParams model.InitContainerParameters,
-	containerParams model.ContainerParameters,
+	initcontainerParams InitContainerParameters,
+	containerParams ContainerParameters,
 ) *appsv1.StatefulSet {
 
 	statefulset := &appsv1.StatefulSet{
@@ -147,13 +147,11 @@ func generateStatefulSet(
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
-					Containers: generateMainContainerDef(stsmodel2.ContainerConfig{
-						Name:            stsMeta.GetName(),
-						ContainerParams: containerParams,
-						Runtime: stsmodel2.RuntimeCfg{
-							ClusterModeEnabled:    stsParams.ClusterModeEnabled,
-							NodeConfVolumeEnabled: stsParams.NodeConfVolumeEnabled,
-						},
+					Containers: generateMainContainerDef(ContainerConfig{
+						Name:                   stsMeta.GetName(),
+						ContainerParams:        containerParams,
+						ClusterModeEnabled:     stsParams.ClusterModeEnabled,
+						NodeConfVolumeEnabled:  stsParams.NodeConfVolumeEnabled,
 						ExternalConfig:         stsParams.ExternalConfig,
 						ClusterVersion:         stsParams.ClusterVersion,
 						AdditionalVolumeMounts: containerParams.AdditionalMountPath,
@@ -164,7 +162,7 @@ func generateStatefulSet(
 						generateEmptyVolume(consts.InitConfigVolumeName)},
 
 					// Init Container 설정
-					InitContainers: generateInitContainerDef(stsmodel2.InitContainerConfig{
+					InitContainers: generateInitContainerDef(InitContainerConfig{
 						Role:                    containerParams.Role,
 						Name:                    stsMeta.GetName(),
 						InitContainerParameters: initcontainerParams,
@@ -196,7 +194,7 @@ func generateStatefulSet(
 			corev1.Volume{
 				Name: consts.TLSCertsVolumeName,
 				VolumeSource: corev1.VolumeSource{
-					Secret: &containerParams.TLSConfig.Secret,
+					Secret: containerParams.TLSConfig.Secret,
 				},
 			})
 	}
@@ -212,14 +210,14 @@ func generateStatefulSet(
 						Secret: containerParams.ACLConfig.Secret,
 					},
 				})
-		} else if containerParams.ACLConfig.PersistentVolumeClaim != nil {
+		} else if containerParams.ACLConfig.PersistentVolumeClaimName != nil {
 			// ACL이 PVC에 저장된 경우
 			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
 				corev1.Volume{
 					Name: consts.ACLPVCVolumeName,
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: *containerParams.ACLConfig.PersistentVolumeClaim,
+							ClaimName: *containerParams.ACLConfig.PersistentVolumeClaimName,
 						},
 					},
 				})
