@@ -2,6 +2,7 @@ package statefulset
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
@@ -333,10 +334,33 @@ func generateMainContainerDef(cfg ContainerConfig) []corev1.Container {
 }
 
 // getProbeInfo는 Health Check Probe 정보를 반환합니다.
-// 현재는 단순히 probe를 반환하지만, 향후 TLS/Auth 설정에 따라 probe를 수정할 수 있습니다.
 func getProbeInfo(probe *corev1.Probe, enableTLS, enableAuth bool) *corev1.Probe {
+	// Probe가 지정되지 않은 경우 기본 Probe 생성
 	if probe == nil {
-		return nil
+		probe = &corev1.Probe{}
+	}
+	// Probe 핸들러가 설정되지 않은 경우, redis-cli ping 명령어로 기본 Probe 생성
+	if probe.Exec == nil && probe.HTTPGet == nil && probe.TCPSocket == nil && probe.GRPC == nil {
+		healthChecker := []string{
+			"redis-cli",
+			"-h", "$(hostname)", // Pod의 호스트명 사용
+		}
+		healthChecker = append(healthChecker, "-p", "${REDIS_PORT}")
+		// 인증이 활성화된 경우 비밀번호 추가
+		if enableAuth {
+			healthChecker = append(healthChecker, "-a", "${REDIS_PASSWORD}")
+		}
+		// TLS가 활성화된 경우 TLS 인자 추가
+		// MTLS 활성화된 경우 대비해(tls-auth-clients yes) tls.crt, tls.key도 추가
+		if enableTLS {
+			healthChecker = append(healthChecker, "--tls", "--cert", "${REDIS_TLS_CERT}", "--key", "${REDIS_TLS_CERT_KEY}", "--cacert", "${REDIS_TLS_CA_KEY}")
+		}
+		healthChecker = append(healthChecker, "ping") // ping 명령어로 연결 확인
+		probe.ProbeHandler = corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"sh", "-c", strings.Join(healthChecker, " ")},
+			},
+		}
 	}
 	return probe
 }
@@ -402,6 +426,9 @@ func GenerateAuthAndTLSArgs(enableAuth, enableTLS bool) (string, string) {
 // Master 노드가 종료될 때 가장 최신 상태의 Follower로 자동 Failover를 수행하여
 // 데이터 손실을 방지하고 서비스 중단 시간을 최소화합니다.
 func generateClusterPreStop(authArgs, tlsArgs string) string {
+	// slave0:ip=10.0.0.2,port=6379,state=online,offset=12345,lag=0
+	// slave1:ip=10.0.0.3,port=6379,state=online,offset=12000,lag=1
+
 	return fmt.Sprintf(`#!/bin/sh
 # 현재 노드의 역할 확인
 ROLE=$(redis-cli -h $(hostname) -p ${REDIS_PORT} %s %s info replication | awk -F: '/role:master/ {print "master"}')
