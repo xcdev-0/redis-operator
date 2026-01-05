@@ -59,6 +59,13 @@ type ContainerParameters struct {
 	EnvVars                 *[]corev1.EnvVar             // 환경 변수 목록
 	Port                    *int                         // Redis 포트
 	HostPort                *int                         // 호스트 포트 (HostNetwork 사용 시)
+
+	RedisExporterImage           string                       // Redis Exporter 이미지
+	RedisExporterImagePullPolicy corev1.PullPolicy            // Redis Exporter 이미지 풀 정책
+	RedisExporterResources       *corev1.ResourceRequirements // Redis Exporter 리소스 요구사항
+	RedisExporterEnv             *[]corev1.EnvVar             // Redis Exporter 환경 변수
+	RedisExporterPort            *int                         // Redis Exporter 포트
+	RedisExporterSecurityContext *corev1.SecurityContext      // Redis Exporter 보안 컨텍스트
 }
 
 // IsPersistenceEnabled는 데이터 영속성이 활성화되어 있는지 확인합니다.

@@ -2,19 +2,14 @@ package statefulset
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	"github.com/xcdev-0/redis-operator/internal/util"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/banzaicloud/k8s-objectmatcher/patch"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 )
 
 type StatefulSet interface {
@@ -26,12 +21,8 @@ type StatefulSetService struct {
 	kubeClient kubernetes.Interface
 }
 
-func NewStatefulSetService(kubeClient kubernetes.Interface) *StatefulSetService {
-	return &StatefulSetService{
-		kubeClient: kubeClient,
-	}
-}
-
+// interface implementation
+// IsStatefulSet, GetStatefulSetReplicas
 func (s *StatefulSetService) IsStatefulSetReady(ctx context.Context, namespace, name string) bool {
 	var (
 		partition = 0
@@ -85,14 +76,10 @@ func (s *StatefulSetService) GetStatefulSetReplicas(ctx context.Context, namespa
 	return *sts.Spec.Replicas
 }
 
-func GetStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace string, name string) (*appsv1.StatefulSet, error) {
-	statefulInfo, err := cl.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		log.FromContext(ctx).V(1).Info("Redis statefulset get action failed")
-		return nil, err
+func NewStatefulSetService(kubeClient kubernetes.Interface) *StatefulSetService {
+	return &StatefulSetService{
+		kubeClient: kubeClient,
 	}
-	log.FromContext(ctx).V(1).Info("Redis statefulset get action was successful")
-	return statefulInfo, nil
 }
 
 // StatefulSetRequest는 CreateOrUpdateStateFul 함수에 전달되는 모든 매개변수를 그룹화합니다.
@@ -108,8 +95,8 @@ type StatefulSetRequest struct {
 func CreateOrUpdateStateFul(ctx context.Context,
 	kubeClient kubernetes.Interface,
 	req *StatefulSetRequest) error {
-	storedStateful, err := GetStatefulSet(ctx, kubeClient, req.Namespace, req.StsObjectMeta.Name)
-	statefulSetDef := generateStatefulSet(
+	storedStateful, err := getStatefulSet(ctx, kubeClient, req.Namespace, req.StsObjectMeta.Name)
+	statefulSetDef := generateStatefulSetDef(
 		req.StsObjectMeta,
 		req.StsParams,
 		req.OwnerReference,
@@ -125,146 +112,19 @@ func CreateOrUpdateStateFul(ctx context.Context,
 			}
 			return createStatefulSet(ctx, kubeClient, req.Namespace, statefulSetDef)
 		}
-		// 다른 에러는 바로 반환
 		return err
 	}
 	return patchStatefulSet(ctx, storedStateful, statefulSetDef, req.Namespace, req.StsParams.RecreateStatefulSet, req.StsParams.RecreateStatefulsetStrategy, kubeClient)
 }
 
-func generateStatefulSet(
-	objectMeta metav1.ObjectMeta,
-	stsParams StatefulSetParameters,
-	ownerDef metav1.OwnerReference,
-	initcontainerParams InitContainerParameters,
-	containerParams ContainerParameters,
-) *appsv1.StatefulSet {
-
-	statefulset := &appsv1.StatefulSet{
-		TypeMeta:   k8smeta.GenerateTypeMeta("StatefulSet", "apps/v1"),
-		ObjectMeta: objectMeta,
-		Spec: appsv1.StatefulSetSpec{
-			Selector: k8smeta.LabelSelectors(
-				k8smeta.ExtractStatefulSetSelectorLabels(objectMeta.GetLabels())),
-			ServiceName:                          fmt.Sprintf("%s-headless", objectMeta.Name),
-			Replicas:                             stsParams.Replicas,
-			UpdateStrategy:                       stsParams.UpdateStrategy,
-			PersistentVolumeClaimRetentionPolicy: stsParams.PersistentVolumeClaimRetentionPolicy,
-			MinReadySeconds:                      stsParams.MinReadySeconds,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      objectMeta.GetLabels(),
-					Annotations: k8smeta.GenerateStatefulSetsAnots(objectMeta, stsParams.IgnoreAnnotations),
-				},
-				Spec: corev1.PodSpec{
-					// 메인 컨테이너 설정
-					Containers: generateMainContainerDef(ContainerConfig{
-						Name:                   objectMeta.GetName(),
-						EnableMetrics:          stsParams.EnableMetrics,
-						ContainerParams:        containerParams,
-						ClusterModeEnabled:     stsParams.ClusterModeEnabled,
-						NodeConfVolumeEnabled:  stsParams.NodeConfVolumeEnabled,
-						ExternalConfig:         stsParams.ExternalConfig,
-						ClusterVersion:         stsParams.ClusterVersion,
-						AdditionalVolumeMounts: containerParams.AdditionalMountPath,
-					}),
-
-					// Init Container에서 생성하는 설정 파일을 저장할 볼륨
-					Volumes: []corev1.Volume{
-						generateEmptyVolume(consts.ConfigVolumeName)},
-
-					// Init Container 설정
-					InitContainers: generateInitContainerDef(InitContainerConfig{
-						Role:                    containerParams.Role,
-						Name:                    objectMeta.GetName(),
-						InitContainerParameters: initcontainerParams,
-						ExternalConfig:          stsParams.ExternalConfig,
-						AdditionalVolumeMounts:  initcontainerParams.AdditionalMountPath,
-						ContainerParameters:     containerParams,
-						ClusterVersion:          stsParams.ClusterVersion,
-					}),
-				},
-			},
-		},
+func getStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace string, name string) (*appsv1.StatefulSet, error) {
+	statefulInfo, err := cl.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		log.FromContext(ctx).V(1).Info("Redis statefulset get action failed")
+		return nil, err
 	}
-
-	// 외부 ConfigMap이 있는 경우, 볼륨에 추가 -> init container에서 사용
-	if stsParams.ExternalConfig != nil {
-		statefulset.Spec.Template.Spec.Volumes = append(
-			statefulset.Spec.Template.Spec.Volumes,
-			convertFromConfigmapToVolume(consts.ExternalConfigVolumeName, *stsParams.ExternalConfig)...)
-	}
-
-	// 추가 볼륨 추가
-	if len(containerParams.AdditionalVolume) > 0 { // ???
-		statefulset.Spec.Template.Spec.Volumes = append(
-			statefulset.Spec.Template.Spec.Volumes,
-			containerParams.AdditionalVolume...)
-	}
-
-	// TLS 인증서 볼륨 추가
-	if containerParams.IsTLSEnabled() {
-		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
-			corev1.Volume{
-				Name: consts.TLSCertsVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					Secret: containerParams.TLSConfig.Secret,
-				},
-			})
-	}
-
-	// ACL 설정 볼륨 추가 (Secret 또는 PVC)
-	// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
-	if containerParams.ACLConfig != nil {
-		volumeName := containerParams.ACLConfig.GetVolumeName()
-		volumeSource := containerParams.ACLConfig.GetVolumeSource()
-		if volumeName != "" && volumeSource != nil {
-			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
-				corev1.Volume{
-					Name:         volumeName,
-					VolumeSource: *volumeSource,
-				})
-		}
-	}
-
-	// 노드 설정 저장용 PVC 템플릿 설정
-	if containerParams.IsPersistenceEnabled() &&
-		stsParams.ClusterModeEnabled &&
-		stsParams.NodeConfVolumeEnabled {
-		statefulset.Spec.VolumeClaimTemplates = append(
-			statefulset.Spec.VolumeClaimTemplates,
-			createPVCTemplate(
-				consts.NodeConfVolumeName,
-				objectMeta,
-				stsParams.NodeConfPVC))
-	}
-
-	// 데이터 저장용 PVC 템플릿 설정
-	if containerParams.IsPersistenceEnabled() {
-		pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, objectMeta.GetName())
-		statefulset.Spec.VolumeClaimTemplates = append(
-			statefulset.Spec.VolumeClaimTemplates,
-			createPVCTemplate(
-				pvcTplName,
-				objectMeta,
-				stsParams.DataPVC))
-	}
-
-	// tolerations 설정
-	if stsParams.Tolerations != nil {
-		statefulset.Spec.Template.Spec.Tolerations = *stsParams.Tolerations
-	}
-	// 이미지 풀 시크릿 설정 (프라이빗 레지스트리 인증용)
-	if stsParams.ImagePullSecrets != nil {
-		statefulset.Spec.Template.Spec.ImagePullSecrets = *stsParams.ImagePullSecrets
-	}
-	// ServiceAccount 설정
-	if stsParams.ServiceAccountName != nil {
-		statefulset.Spec.Template.Spec.ServiceAccountName = *stsParams.ServiceAccountName
-	}
-	// OwnerReference 추가 (CRD가 삭제되면 StatefulSet도 함께 삭제되도록)
-	k8smeta.AddOwnerRefToObject(statefulset, ownerDef)
-
-	return statefulset
+	log.FromContext(ctx).V(1).Info("Redis statefulset get action was successful")
+	return statefulInfo, nil
 }
 
 func createStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace string, stateful *appsv1.StatefulSet) error {

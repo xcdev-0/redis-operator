@@ -5,7 +5,11 @@ import (
 
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
+	"github.com/xcdev-0/redis-operator/internal/util"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
 
@@ -17,6 +21,142 @@ type InitContainerConfig struct {
 	ExternalConfig          *string
 	ContainerParameters     ContainerParameters
 	ClusterVersion          *string
+}
+
+func generateStatefulSetDef(
+	objectMeta metav1.ObjectMeta,
+	stsParams StatefulSetParameters,
+	ownerDef metav1.OwnerReference,
+	initcontainerParams InitContainerParameters,
+	containerParams ContainerParameters,
+) *appsv1.StatefulSet {
+
+	statefulset := &appsv1.StatefulSet{
+		TypeMeta:   k8smeta.GenerateTypeMeta("StatefulSet", "apps/v1"),
+		ObjectMeta: objectMeta,
+		Spec: appsv1.StatefulSetSpec{
+			Selector: k8smeta.LabelSelectors(
+				k8smeta.ExtractStatefulSetSelectorLabels(objectMeta.GetLabels())),
+			ServiceName:                          fmt.Sprintf("%s-headless", objectMeta.Name),
+			Replicas:                             stsParams.Replicas,
+			UpdateStrategy:                       stsParams.UpdateStrategy,
+			PersistentVolumeClaimRetentionPolicy: stsParams.PersistentVolumeClaimRetentionPolicy,
+			MinReadySeconds:                      stsParams.MinReadySeconds,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      objectMeta.GetLabels(),
+					Annotations: k8smeta.GenerateStatefulSetsAnots(objectMeta, stsParams.IgnoreAnnotations),
+				},
+				Spec: corev1.PodSpec{
+					// 메인 컨테이너 설정
+					Containers: generateMainContainerDef(ContainerConfig{
+						Name:                   objectMeta.GetName(),
+						EnableMetrics:          stsParams.EnableMetrics,
+						ContainerParams:        containerParams,
+						ClusterModeEnabled:     stsParams.ClusterModeEnabled,
+						NodeConfVolumeEnabled:  stsParams.NodeConfVolumeEnabled,
+						ExternalConfig:         stsParams.ExternalConfig,
+						ClusterVersion:         stsParams.ClusterVersion,
+						AdditionalVolumeMounts: containerParams.AdditionalMountPath,
+					}),
+
+					// Init Container에서 생성하는 설정 파일을 저장할 볼륨
+					Volumes: []corev1.Volume{
+						generateEmptyVolume(consts.ConfigVolumeName)},
+
+					// Init Container 설정
+					InitContainers: generateInitContainerDef(InitContainerConfig{
+						Role:                    containerParams.Role,
+						Name:                    objectMeta.GetName(),
+						InitContainerParameters: initcontainerParams,
+						ExternalConfig:          stsParams.ExternalConfig,
+						AdditionalVolumeMounts:  initcontainerParams.AdditionalMountPath,
+						ContainerParameters:     containerParams,
+						ClusterVersion:          stsParams.ClusterVersion,
+					}),
+				},
+			},
+		},
+	}
+
+	// 외부 ConfigMap이 있는 경우, 볼륨에 추가 -> init container에서 사용
+	if stsParams.ExternalConfig != nil {
+		statefulset.Spec.Template.Spec.Volumes = append(
+			statefulset.Spec.Template.Spec.Volumes,
+			convertFromConfigmapToVolume(consts.ExternalConfigVolumeName, *stsParams.ExternalConfig)...)
+	}
+
+	// 추가 볼륨 추가
+	if len(containerParams.AdditionalVolume) > 0 { // ???
+		statefulset.Spec.Template.Spec.Volumes = append(
+			statefulset.Spec.Template.Spec.Volumes,
+			containerParams.AdditionalVolume...)
+	}
+
+	// TLS 인증서 볼륨 추가
+	if containerParams.IsTLSEnabled() {
+		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
+			corev1.Volume{
+				Name: consts.TLSCertsVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: containerParams.TLSConfig.Secret,
+				},
+			})
+	}
+
+	// ACL 설정 볼륨 추가 (Secret 또는 PVC)
+	// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
+	if containerParams.ACLConfig != nil {
+		volumeName := containerParams.ACLConfig.GetVolumeName()
+		volumeSource := containerParams.ACLConfig.GetVolumeSource()
+		if volumeName != "" && volumeSource != nil {
+			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
+				corev1.Volume{
+					Name:         volumeName,
+					VolumeSource: *volumeSource,
+				})
+		}
+	}
+
+	// 노드 설정 저장용 PVC 템플릿 설정
+	if containerParams.IsPersistenceEnabled() &&
+		stsParams.ClusterModeEnabled &&
+		stsParams.NodeConfVolumeEnabled {
+		statefulset.Spec.VolumeClaimTemplates = append(
+			statefulset.Spec.VolumeClaimTemplates,
+			createPVCTemplate(
+				consts.NodeConfVolumeName,
+				objectMeta,
+				stsParams.NodeConfPVC))
+	}
+
+	// 데이터 저장용 PVC 템플릿 설정
+	if containerParams.IsPersistenceEnabled() {
+		pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, objectMeta.GetName())
+		statefulset.Spec.VolumeClaimTemplates = append(
+			statefulset.Spec.VolumeClaimTemplates,
+			createPVCTemplate(
+				pvcTplName,
+				objectMeta,
+				stsParams.DataPVC))
+	}
+
+	// tolerations 설정
+	if stsParams.Tolerations != nil {
+		statefulset.Spec.Template.Spec.Tolerations = *stsParams.Tolerations
+	}
+	// 이미지 풀 시크릿 설정 (프라이빗 레지스트리 인증용)
+	if stsParams.ImagePullSecrets != nil {
+		statefulset.Spec.Template.Spec.ImagePullSecrets = *stsParams.ImagePullSecrets
+	}
+	// ServiceAccount 설정
+	if stsParams.ServiceAccountName != nil {
+		statefulset.Spec.Template.Spec.ServiceAccountName = *stsParams.ServiceAccountName
+	}
+	// OwnerReference 추가 (CRD가 삭제되면 StatefulSet도 함께 삭제되도록)
+	k8smeta.AddOwnerRefToObject(statefulset, ownerDef)
+
+	return statefulset
 }
 
 // generateInitContainerDef는 Redis Init Container 정의를 생성합니다.
@@ -41,7 +181,7 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 		if memLimit != 0 {
 			maxMem := int(float64(memLimit) * float64(*containerParams.MaxMemoryPercentOfLimit) / 100)
 			envVars = append(envVars, corev1.EnvVar{
-				Name:  consts.EnvRedisMaxMemory,
+				Name:  consts.REDIS_MAX_MEMORY,
 				Value: fmt.Sprintf("%d", maxMem),
 			})
 		}
@@ -94,6 +234,9 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 				Persistence:            initContainerParams.IsPersistenceEnabled(),
 				ClusterModeEnabled:     false,
 				NodeConfVolumeEnabled:  false,
+				ExternalConfig:         nil,
+				TLS:                    nil,
+				ACL:                    nil,
 			}),
 		}
 		containers = append(containers, userInitContainer)
@@ -181,7 +324,7 @@ func generateMainContainerDef(cfg ContainerConfig) []corev1.Container {
 
 	containers := []corev1.Container{redisContainer}
 
-	// Redis Exporter 메트릭 컨테이너 추가 (옵션)
+	// Redis Exporter 메트릭 컨테이너 추가
 	if cfg.EnableMetrics {
 		containers = append(containers, enableRedisMonitoring(containerParams))
 	}
@@ -200,14 +343,38 @@ func getProbeInfo(probe *corev1.Probe, enableTLS, enableAuth bool) *corev1.Probe
 
 // enableRedisMonitoring은 Redis Exporter 사이드카 컨테이너를 생성합니다.
 // 이 컨테이너는 Redis 메트릭을 수집하여 Prometheus에 노출합니다.
-func enableRedisMonitoring(containerParams ContainerParameters) corev1.Container {
-	return corev1.Container{
-		Name:            "redis-monitoring",
-		Image:           containerParams.Image,
-		ImagePullPolicy: containerParams.ImagePullPolicy,
-		Command:         []string{"redis-monitoring"},
-		Args:            []string{"/etc/redis/redis.conf"},
+func enableRedisMonitoring(p ContainerParameters) corev1.Container {
+	exporterDefinition := corev1.Container{
+		Name:            consts.RedisExporterContainer,
+		Image:           p.RedisExporterImage,
+		ImagePullPolicy: p.RedisExporterImagePullPolicy,
+		Env:             getExporterEnvironmentVariables(p),
+		// TLS 인증서 볼륨은 마운트하지만, 데이터 PVC는 마운트하지 않습니다.
+		// Exporter는 Redis에 연결만 하면 되므로 데이터 볼륨이 필요 없습니다.
+		VolumeMounts: getVolumeMount(volumeMountParams{
+			Name:                   "",
+			AdditionalVolumeMounts: p.AdditionalMountPath,
+			Persistence:            false,
+			ClusterModeEnabled:     false,
+			NodeConfVolumeEnabled:  false,
+			ExternalConfig:         nil,
+			TLS:                    p.TLSConfig,
+			ACL:                    p.ACLConfig,
+		}),
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          consts.RedisExporterPortName,
+				ContainerPort: int32(*util.Coalesce(p.RedisExporterPort, ptr.To(common.RedisExporterPort))),
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		SecurityContext: p.RedisExporterSecurityContext,
 	}
+	// Redis Exporter 리소스 제한 설정
+	if p.RedisExporterResources != nil {
+		exporterDefinition.Resources = *p.RedisExporterResources
+	}
+	return exporterDefinition
 }
 
 // GeneratePreStopCommand는 Redis Pod 종료 전 실행할 PreStop Hook 명령어를 생성합니다.
