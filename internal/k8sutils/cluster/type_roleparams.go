@@ -2,15 +2,18 @@ package cluster
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
+	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type clusterNodesResponse []string
@@ -139,6 +142,9 @@ func generateStatefulSetParams(ctx context.Context,
 		stsParams.DataPVC = cr.Spec.Storage.VolumeClaimTemplate                 // 데이터 저장용 PVC 템플릿
 		stsParams.NodeConfVolumeEnabled = cr.Spec.Storage.NodeConfVolumeEnabled // 노드 설정 볼륨 사용 여부
 		stsParams.NodeConfPVC = cr.Spec.Storage.NodeConfVolumeClaimTemplate     // 노드 설정 저장용 PVC 템플릿
+		if cr.Spec.Storage.VolumeMount.Volume != nil {
+			stsParams.AdditionalVolumes = cr.Spec.Storage.VolumeMount.Volume
+		}
 	}
 	// 외부 ConfigMap 설정 (추가 Redis 설정 파일)
 	if redisClusterSTS.ExternalConfig != nil {
@@ -155,11 +161,182 @@ func generateStatefulSetParams(ctx context.Context,
 }
 
 func generateRedisClusterInitContainerParams(cr *rcvb2.RedisCluster) statefulset.InitContainerParameters {
-	return statefulset.InitContainerParameters{}
+	trueProperty := true
+	initcontainerProp := statefulset.InitContainerParameters{}
+
+	// Init Container가 정의된 경우 파라미터 설정
+	if cr.Spec.InitContainer != nil {
+		initContainer := cr.Spec.InitContainer
+
+		// Init Container 기본 파라미터 설정
+		initcontainerProp = statefulset.InitContainerParameters{
+			Enabled:               initContainer.Enabled,         // Init Container 활성화 여부
+			RedisSetupType:        "cluster",                     // Redis 역할 (클러스터 모드)
+			Image:                 initContainer.Image,           // Init Container 이미지
+			ImagePullPolicy:       initContainer.ImagePullPolicy, // 이미지 풀 정책
+			Resources:             initContainer.Resources,       // 리소스 요구사항
+			AdditionalEnvVariable: initContainer.EnvVars,         // 추가 환경 변수
+			Command:               initContainer.Command,         // 실행 명령어
+			Arguments:             initContainer.Args,            // 명령어 인자
+			SecurityContext:       initContainer.SecurityContext, // 보안 컨텍스트
+		}
+
+		// 스토리지 볼륨 마운트 설정 (데이터 복원 등에 사용)
+		if cr.Spec.Storage != nil {
+			initcontainerProp.AdditionalVolumeMounts = cr.Spec.Storage.VolumeMount.VolumeMounts
+		}
+		// 데이터 영속성 활성화 (Init Container가 데이터 볼륨에 접근 가능하도록)
+		if cr.Spec.Storage != nil {
+			initcontainerProp.PersistenceEnabled = &trueProperty
+		}
+	}
+
+	return initcontainerProp
 }
 
-func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Interface, cr *rcvb2.RedisCluster, securityContext *corev1.SecurityContext, readinessProbeDef *corev1.Probe, livenessProbeDef *corev1.Probe, role string, resources *corev1.ResourceRequirements) statefulset.ContainerParameters {
-	return statefulset.ContainerParameters{}
+func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Interface, cr *rcvb2.RedisCluster,
+	securityContext *corev1.SecurityContext,
+	readinessProbeDef *corev1.Probe,
+	livenessProbeDef *corev1.Probe,
+	role string,
+	resources *corev1.ResourceRequirements) statefulset.ContainerParameters {
+	trueProperty := true
+	falseProperty := false
+	// 컨테이너 기본 파라미터 설정
+	containerProp := statefulset.ContainerParameters{
+		RedisSetupType:  "cluster",                                // cluster, sentinel, standalone 등등 가능
+		Image:           cr.Spec.KubernetesConfig.Image,           // Redis 이미지
+		ImagePullPolicy: cr.Spec.KubernetesConfig.ImagePullPolicy, // 이미지 풀 정책
+		Resources:       resources,                                // 리소스 요구사항
+		SecurityContext: securityContext,                          // 보안 컨텍스트
+		Port:            cr.Spec.ClientPort,                       // Redis 포트
+		HostPort:        cr.Spec.HostPort,                         // 호스트 포트 (HostNetwork 사용 시)
+	}
+	// Redis 메모리 설정 (메모리 제한의 최대 사용 비율)
+	// 우선순위: role별 RedisConfig > 최상위 RedisConfig
+	if maxPercentOfLimit := cr.Spec.GetRedisMaxPercentOfLimitConfig(role); maxPercentOfLimit != nil {
+		containerProp.MaxMemoryPercentOfLimit = maxPercentOfLimit
+	}
+	// 환경 변수 설정
+	if cr.Spec.EnvVars != nil {
+		containerProp.EnvVars = cr.Spec.EnvVars
+	}
+	// NodePort Service 타입인 경우, 각 Pod의 NodePort를 환경 변수로 설정
+	// Redis Cluster는 노드 간 통신을 위해 각 Pod의 NodePort를 알아야 합니다.
+	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
+		envVars := util.Coalesce(containerProp.EnvVars, &[]corev1.EnvVar{})
+		// NodePort 모드 활성화 플래그
+		*envVars = append(*envVars, corev1.EnvVar{
+			Name:  "NODEPORT",
+			Value: "true",
+		})
+		// 호스트 IP 환경 변수 (Pod가 실행 중인 노드의 IP)
+		*envVars = append(*envVars, corev1.EnvVar{
+			Name: "HOST_IP",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "status.hostIP", // Pod의 호스트 IP
+				},
+			},
+		})
+
+		// 각 Pod의 NodePort 정보를 저장할 구조체
+		type ports struct {
+			announcePort    int // Redis 클라이언트 포트 (NodePort)
+			announceBusPort int // Redis 클러스터 버스 포트 (NodePort, 포트 + 10000)
+		}
+		nps := map[string]ports{} // Pod 이름을 키로 하는 NodePort 맵
+		replicas := cr.Spec.GetReplicaCounts(role)
+		// 각 Pod의 Service를 조회하여 NodePort 정보 수집
+		for i := 0; i < int(replicas); i++ {
+			// Pod별 Service 이름: {cr.Name}-{role}-{i}
+			// 예: redis-cluster-leader-0, redis-cluster-leader-1, ...
+			svc, err := getService(ctx, cl, cr.Namespace, cr.Name+"-"+redisSetupType+"-"+strconv.Itoa(i))
+			if err != nil {
+				log.FromContext(ctx).Error(err, "Cannot get service for Redis", "Setup.Type", redisSetupType)
+			} else {
+				// Service의 NodePort 정보 저장
+				// Ports[0]: Redis 클라이언트 포트
+				// Ports[1]: Redis 클러스터 버스 포트 (포트 + 10000)
+				nps[svc.Name] = ports{
+					announcePort:    int(svc.Spec.Ports[0].NodePort),
+					announceBusPort: int(svc.Spec.Ports[1].NodePort),
+				}
+			}
+		}
+		// 각 Pod의 NodePort를 환경 변수로 설정
+		// 환경 변수 이름: announce_port_{service_name}, announce_bus_port_{service_name}
+		// 예: announce_port_redis_cluster_leader_0, announce_bus_port_redis_cluster_leader_0
+		for name, np := range nps {
+			*envVars = append(*envVars, corev1.EnvVar{
+				Name:  "announce_port_" + strings.ReplaceAll(name, "-", "_"), // 하이픈을 언더스코어로 변경
+				Value: strconv.Itoa(np.announcePort),
+			})
+			*envVars = append(*envVars, corev1.EnvVar{
+				Name:  "announce_bus_port_" + strings.ReplaceAll(name, "-", "_"),
+				Value: strconv.Itoa(np.announceBusPort),
+			})
+		}
+		containerProp.EnvVars = envVars
+	}
+	// 추가 볼륨 마운트 설정
+	if cr.Spec.Storage != nil {
+		containerProp.AdditionalVolumeMounts = cr.Spec.Storage.VolumeMount.VolumeMounts
+	}
+	// Redis 비밀번호 인증 설정
+	if cr.Spec.KubernetesConfig.ExistingPasswordSecret != nil {
+		containerProp.EnabledPassword = &trueProperty
+		containerProp.PasswordSecretName = cr.Spec.KubernetesConfig.ExistingPasswordSecret.Name
+		containerProp.PasswordSecretKey = cr.Spec.KubernetesConfig.ExistingPasswordSecret.Key
+	} else {
+		containerProp.EnabledPassword = &falseProperty
+	}
+	// Redis Exporter 사이드카 설정 (메트릭 수집용)
+	if cr.Spec.RedisExporter != nil {
+		containerProp.RedisExporterImage = cr.Spec.RedisExporter.Image
+		containerProp.RedisExporterImagePullPolicy = cr.Spec.RedisExporter.ImagePullPolicy
+		containerProp.RedisExporterSecurityContext = cr.Spec.RedisExporter.SecurityContext
+
+		if cr.Spec.RedisExporter.Resources != nil {
+			containerProp.RedisExporterResources = cr.Spec.RedisExporter.Resources
+		}
+		if cr.Spec.RedisExporter.EnvVars != nil {
+			containerProp.RedisExporterEnv = cr.Spec.RedisExporter.EnvVars
+		}
+		if cr.Spec.RedisExporter.Port != nil {
+			containerProp.RedisExporterPort = cr.Spec.RedisExporter.Port
+		}
+	}
+	// Health Check Probe 설정
+	if readinessProbeDef != nil {
+		containerProp.ReadinessProbe = readinessProbeDef
+	}
+	if livenessProbeDef != nil {
+		containerProp.LivenessProbe = livenessProbeDef
+	}
+	// 데이터 영속성 활성화 여부
+	if cr.Spec.Storage != nil && cr.Spec.PersistenceEnabled != nil && *cr.Spec.PersistenceEnabled {
+		containerProp.PersistenceEnabled = &trueProperty
+	} else {
+		containerProp.PersistenceEnabled = &falseProperty
+	}
+	// TLS 설정
+	if cr.Spec.TLS != nil {
+		containerProp.TLSConfig = &statefulset.TLSConfig{
+			CaKeyFile:   cr.Spec.TLS.CaKeyFile,
+			CertKeyFile: cr.Spec.TLS.CertKeyFile,
+			KeyFile:     cr.Spec.TLS.KeyFile,
+			Secret:      cr.Spec.TLS.Secret,
+		}
+	}
+	// ACL 설정
+	if cr.Spec.ACL != nil {
+		containerProp.ACLConfig = &statefulset.ACLConfig{
+			Secret:                    cr.Spec.ACL.Secret,
+			PersistentVolumeClaimName: cr.Spec.ACL.PersistentVolumeClaimName,
+		}
+	}
+	return containerProp
 }
 
 // getDeletionPropagationStrategy는 어노테이션을 기반으로 삭제 전파 전략을 반환합니다.
