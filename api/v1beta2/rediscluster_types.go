@@ -22,33 +22,89 @@ import (
 )
 
 // omitempty 동작방식이
-// 포인터 아닐 때 → zero-value도 “비어 있다”고 판단
-// 포인터일 때 → nil(널)일 때만 “비어 있다”고 판단
+// 포인터 아닐 때 → zero-value도 "비어 있다"고 판단
+// 포인터일 때 → nil(널)일 때만 "비어 있다"고 판단
 type RedisClusterSpec struct {
-	// ClusterSize defines the default number of replicas for both leader and follower when not explicitly set
-	ClusterSize      *int32           `json:"clusterSize"`
-	KubernetesConfig KubernetesConfig `json:"kubernetesConfig"`
-	HostNetwork      bool             `json:"hostNetwork,omitempty"`
-	// +kubebuilder:default:=6379
-	Port *int `json:"port,omitempty"`
+	// ===== 기본 클러스터 설정 =====
+	ClusterSize *int32 `json:"clusterSize"`
 	// +kubebuilder:default:=v7
-	ClusterVersion     *string                      `json:"clusterVersion,omitempty"`
-	RedisConfig        *RedisConfig                 `json:"redisConfig,omitempty"`
-	RedisLeader        RedisLeader                  `json:"redisLeader,omitempty"`
-	RedisFollower      RedisFollower                `json:"redisFollower,omitempty"`
-	RedisExporter      *RedisExporter               `json:"redisExporter,omitempty"`
-	Storage            *ClusterStorage              `json:"storage,omitempty"`
-	PodSecurityContext *corev1.PodSecurityContext   `json:"podSecurityContext,omitempty"`
-	PriorityClassName  string                       `json:"priorityClassName,omitempty"`
-	Resources          *corev1.ResourceRequirements `json:"resources,omitempty"`
-	TLS                *TLSConfig                   `json:"TLS,omitempty"`
-	ACL                *ACLConfig                   `json:"acl,omitempty"`
-	InitContainer      *InitContainer               `json:"initContainer,omitempty"`
-	Sidecars           *[]Sidecar                   `json:"sidecars,omitempty"`
-	ServiceAccountName *string                      `json:"serviceAccountName,omitempty"`
-	PersistenceEnabled *bool                        `json:"persistenceEnabled,omitempty"`
-	EnvVars            *[]corev1.EnvVar             `json:"env,omitempty"`
-	HostPort           *int                         `json:"hostPort,omitempty"`
+	ClusterVersion *string `json:"clusterVersion,omitempty"`
+	// +kubebuilder:default:=6379
+	ClientPort  *int `json:"clientPort,omitempty"`
+	HostPort    *int `json:"hostPort,omitempty"`
+	HostNetwork bool `json:"hostNetwork,omitempty"`
+
+	// ===== Kubernetes 기본 설정 =====
+	// 이미지, 리소스, 업데이트 전략, 서비스 설정 등이 포함됩니다.
+	KubernetesConfig   KubernetesConfig `json:"kubernetesConfig"`
+	ServiceAccountName *string          `json:"serviceAccountName,omitempty"`
+
+	// ===== Redis 역할별 설정 =====
+	RedisLeader   RedisLeader   `json:"redisLeader,omitempty"`
+	RedisFollower RedisFollower `json:"redisFollower,omitempty"`
+
+	// ===== Redis 설정 =====
+	RedisConfig        *RedisConfig    `json:"redisConfig,omitempty"`
+	PersistenceEnabled *bool           `json:"persistenceEnabled,omitempty"`
+	Storage            *ClusterStorage `json:"storage,omitempty"`
+
+	// ===== 보안 및 인증 설정 =====
+	TLS                *TLSConfig                 `json:"TLS,omitempty"`
+	ACL                *ACLConfig                 `json:"acl,omitempty"`
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+	PriorityClassName  string                     `json:"priorityClassName,omitempty"`
+
+	// ===== 컨테이너 설정 =====
+	InitContainer *InitContainer `json:"initContainer,omitempty"`
+	Sidecars      *[]Sidecar     `json:"sidecars,omitempty"`
+
+	// ===== 모니터링 설정 =====
+	RedisExporter *RedisExporter `json:"redisExporter,omitempty"`
+
+	// ===== 환경 변수 설정 =====
+	EnvVars *[]corev1.EnvVar `json:"env,omitempty"`
+}
+
+func (cr *RedisClusterSpec) GetRedisLeaderResources() *corev1.ResourceRequirements {
+	if cr.RedisLeader.Resources != nil {
+		return cr.RedisLeader.Resources
+	}
+	return cr.KubernetesConfig.Resources
+}
+
+func (cr *RedisClusterSpec) GetRedisFollowerResources() *corev1.ResourceRequirements {
+	if cr.RedisFollower.Resources != nil {
+		return cr.RedisFollower.Resources
+	}
+	return cr.KubernetesConfig.Resources
+}
+
+// 우선순위: role별 RedisConfig (RedisLeader/RedisFollower.RedisConfig) > 최상위 RedisConfig
+func (cr *RedisClusterSpec) GetRedisMaxPercentOfLimitConfig(role string) *int {
+	if role == "leader" && cr.RedisLeader.RedisConfig != nil && cr.RedisLeader.RedisConfig.MaxMemoryPercentOfLimit != nil {
+		return cr.RedisLeader.RedisConfig.MaxMemoryPercentOfLimit
+	}
+	if role == "follower" && cr.RedisFollower.RedisConfig != nil && cr.RedisFollower.RedisConfig.MaxMemoryPercentOfLimit != nil {
+		return cr.RedisFollower.RedisConfig.MaxMemoryPercentOfLimit
+	}
+	if cr.RedisConfig != nil && cr.RedisConfig.MaxMemoryPercentOfLimit != nil {
+		return cr.RedisConfig.MaxMemoryPercentOfLimit
+	}
+	return nil
+}
+
+// 우선순위: role별 RedisConfig.AdditionalRedisConfig > 최상위 RedisConfig.AdditionalRedisConfig
+func (cr *RedisClusterSpec) GetExternalConfig(role string) *string {
+	if role == "leader" && cr.RedisLeader.RedisConfig != nil && cr.RedisLeader.RedisConfig.AdditionalRedisConfig != nil {
+		return cr.RedisLeader.RedisConfig.AdditionalRedisConfig
+	}
+	if role == "follower" && cr.RedisFollower.RedisConfig != nil && cr.RedisFollower.RedisConfig.AdditionalRedisConfig != nil {
+		return cr.RedisFollower.RedisConfig.AdditionalRedisConfig
+	}
+	if cr.RedisConfig != nil && cr.RedisConfig.AdditionalRedisConfig != nil {
+		return cr.RedisConfig.AdditionalRedisConfig
+	}
+	return nil
 }
 
 // RedisClusterStatus defines the observed state of RedisCluster.
@@ -75,6 +131,16 @@ type RedisCluster struct {
 	// status defines the observed state of RedisCluster
 	// +optional
 	Status RedisClusterStatus `json:"status,omitempty,omitzero"`
+}
+
+func (cr *RedisClusterSpec) GetReplicaCounts(t string) int32 {
+	count := cr.ClusterSize
+	if t == "leader" && cr.RedisLeader.ReplicaCount != nil {
+		count = cr.RedisLeader.ReplicaCount
+	} else if t == "follower" && cr.RedisFollower.ReplicaCount != nil {
+		count = cr.RedisFollower.ReplicaCount
+	}
+	return *count
 }
 
 // +kubebuilder:object:root=true
