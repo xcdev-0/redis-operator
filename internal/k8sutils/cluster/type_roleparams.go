@@ -25,9 +25,9 @@ type RedisClusterRoleParams struct {
 	// ============================================================================
 	// 공통 설정
 	// ============================================================================
-	RedisStatefulType string  // StatefulSet 타입 ("leader" 또는 "follower")
-	ExternalConfig    *string // 외부 ConfigMap 이름 (추가 Redis 설정)
-	ReplicaCounts     int32   // 레플리카 수
+	RedisClusterRole string  // Redis Cluster 역할 ("leader" 또는 "follower")
+	ExternalConfig   *string // 외부 ConfigMap 이름 (추가 Redis 설정)
+	ReplicaCounts    int32   // 레플리카 수
 
 	// ============================================================================
 	// Pod 레벨 설정 (PodSpec에 적용)
@@ -52,11 +52,11 @@ type RedisClusterRoleParams struct {
 }
 
 func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	stsName := cr.Name + "-" + redisClusterRoleParams.RedisStatefulType
+	stsName := GetStatefulSetName(cr.Name, redisClusterRoleParams.RedisClusterRole)
 	stsLabels := k8smeta.GetRedisLabels(&k8smeta.RedisLabels{
 		Name:      stsName,
 		SetupType: k8smeta.Cluster,
-		Role:      redisClusterRoleParams.RedisStatefulType,
+		Role:      redisClusterRoleParams.RedisClusterRole,
 		Labels:    cr.Labels,
 	})
 	stsLabels["cluster"] = cr.Name
@@ -84,7 +84,7 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx
 				redisClusterRoleParams.ContainerSecurityContext,
 				redisClusterRoleParams.ReadinessProbe,
 				redisClusterRoleParams.LivenessProbe,
-				redisClusterRoleParams.RedisStatefulType,
+				redisClusterRoleParams.RedisClusterRole,
 				redisClusterRoleParams.Resources,
 				redisClusterRoleParams.ReplicaCounts,
 			),
@@ -218,7 +218,7 @@ func generateRedisClusterContainerParams(
 		// 각 Pod의 Service를 조회하여 NodePort 정보 수집
 		for i := 0; i < int(replicaCounts); i++ {
 			// 예: myrediscluster-leader-0, myrediscluster-leader-1, ...
-			svc, err := getService(ctx, cl, cr.Namespace, cr.Name+"-"+role+"-"+strconv.Itoa(i))
+			svc, err := getService(ctx, cl, cr.Namespace, GetNodePortServiceName(cr.Name, role, i))
 			if err != nil {
 				log.FromContext(ctx).Error(err, "Cannot get service for redis pod", "%s-%s-%d in ns: %s", cr.Name, role, i, cr.Namespace)
 			} else {

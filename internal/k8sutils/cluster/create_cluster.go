@@ -13,7 +13,7 @@ import (
 func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
 	// Leader StatefulSet 파라미터 설정
 	prop := RedisClusterRoleParams{
-		RedisStatefulType:             "leader",                                          // StatefulSet 타입
+		RedisClusterRole:              "leader",                                          // StatefulSet 타입
 		Resources:                     cr.Spec.GetRedisLeaderResources(),                 // Leader 리소스 요구사항
 		ReplicaCounts:                 cr.Spec.GetLeaderReplicaCount(),                   // Leader 레플리카 수
 		ContainerSecurityContext:      cr.Spec.RedisLeader.ContainerSecurityContext,      // Leader 보안 컨텍스트
@@ -35,7 +35,7 @@ func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernete
 func CreateRedisFollower(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
 	// Follower StatefulSet 파라미터 설정
 	prop := RedisClusterRoleParams{
-		RedisStatefulType:             "follower",                                          // StatefulSet 타입
+		RedisClusterRole:              "follower",                                          // StatefulSet 타입
 		Resources:                     cr.Spec.GetRedisFollowerResources(),                 // Follower 리소스 요구사항
 		ReplicaCounts:                 cr.Spec.GetFollowerReplicaCount(),                   // Follower 레플리카 수
 		ContainerSecurityContext:      cr.Spec.RedisFollower.ContainerSecurityContext,      // Follower 보안 컨텍스트

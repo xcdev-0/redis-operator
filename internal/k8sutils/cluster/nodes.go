@@ -70,7 +70,7 @@ func getRedisNodeID(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 // CheckRedisNodeCount는 클러스터 내 지정된 타입의 노드 개수를 반환합니다.
 // nodeType이 빈 문자열이면 전체 노드 개수를 반환합니다.
 func CheckRedisNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) int32 {
-	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, cr.Name+"-leader-0")
+	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, GetFirstLeaderPodName(cr.Name))
 	defer redisClient.Close()
 	var redisNodeType string
 	clusterNodes, err := clusterNodes(ctx, redisClient)

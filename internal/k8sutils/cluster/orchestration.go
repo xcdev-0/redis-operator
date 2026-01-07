@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"strconv"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisutils"
@@ -12,16 +11,17 @@ import (
 
 func RemoveRedisFollowerNodesFromCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, shardIdx int32) {
 	var cmd []string
-	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, cr.Name+"-leader-0")
+	firstLeaderPodName := GetFirstLeaderPodName(cr.Name)
+	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, firstLeaderPodName)
 	defer redisClient.Close()
 
 	clusterControlPod := redisutils.RedisDetails{
-		PodName:   cr.Name + "-leader-0",
+		PodName:   firstLeaderPodName,
 		Namespace: cr.Namespace,
 	}
 	// 삭제될 팔로워들의 리더 팟
 	targetLeaderPod := redisutils.RedisDetails{
-		PodName:   cr.Name + "-leader-" + strconv.Itoa(int(shardIdx)),
+		PodName:   GetPodName(cr.Name, "leader", int(shardIdx)),
 		Namespace: cr.Namespace,
 	}
 
@@ -35,7 +35,7 @@ func RemoveRedisFollowerNodesFromCluster(ctx context.Context, client kubernetes.
 		cmd = append(cmd, "-a")
 		cmd = append(cmd, pass)
 	}
-	cmd = append(cmd, redisutils.GetRedisTLSArgs(cr.Spec.TLS, cr.Name+"-leader-0")...)
+	cmd = append(cmd, redisutils.GetRedisTLSArgs(cr.Spec.TLS, firstLeaderPodName)...)
 
 	targetLeaderNodeID := getRedisNodeID(ctx, client, cr, RedisDetails{
 		PodName:   targetLeaderPod.PodName,
@@ -47,7 +47,7 @@ func RemoveRedisFollowerNodesFromCluster(ctx context.Context, client kubernetes.
 	cmd = append(cmd, redisutils.GetEndpoint(ctx, client, cr, clusterControlPod))
 	for _, followerNodeID := range attachedFollowerNodeIDs {
 		cmd = append(cmd, followerNodeID)
-		redisutils.ExecuteCommand(ctx, client, cr, cmd, cr.Name+"-leader-0")
+		redisutils.ExecuteCommand(ctx, client, cr, cmd, firstLeaderPodName)
 		cmd = cmd[:len(cmd)-1]
 	}
 }

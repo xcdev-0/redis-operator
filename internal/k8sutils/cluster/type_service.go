@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"strconv"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
@@ -22,7 +21,7 @@ type RedisClusterService struct {
 }
 
 func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	serviceName := cr.Name + "-" + rcs.role
+	serviceName := GetServiceName(cr.Name, rcs.role)
 	var epp k8smeta.ExporterPortProvider
 	if cr.Spec.RedisExporter != nil {
 		epp = func() (port int, enable bool) {
@@ -171,15 +170,20 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 }
 
 func (rcs RedisClusterService) createOrUpdateClusterNodePortService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	replicaCount := cr.Spec.GetReplicaCounts(rcs.role)
+	var replicaCount int32
+	if rcs.role == "leader" {
+		replicaCount = cr.Spec.GetLeaderReplicaCount()
+	} else {
+		replicaCount = cr.Spec.GetFollowerReplicaCount()
+	}
 
 	// 각 Pod마다 개별 NodePort Service 생성
 	for i := 0; i < int(replicaCount); i++ {
 		// 예: redisutils-cluster-leader-0, redisutils-cluster-leader-1, ...
-		serviceName := cr.Name + "-" + rcs.role + "-" + strconv.Itoa(i)
+		serviceName := GetNodePortServiceName(cr.Name, rcs.role, i)
 		serviceLabels := k8smeta.GetRedisLabels(
 			&k8smeta.RedisLabels{
-				Name:      cr.Name + "-" + rcs.role,
+				Name:      GetServiceName(cr.Name, rcs.role),
 				SetupType: k8smeta.Cluster,
 				Role:      rcs.role,
 				Labels: map[string]string{

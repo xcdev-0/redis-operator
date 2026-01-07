@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -31,7 +30,7 @@ func isRedisLeader(ctx context.Context, redisClient *redis.Client) (bool, error)
 
 // IsRedisLeader는 지정된 인덱스의 Pod이 Redis 리더인지 확인합니다.
 func IsRedisLeader(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, leadIndex int32) bool {
-	podName := cr.Name + "-leader-" + strconv.Itoa(int(leadIndex))
+	podName := GetPodName(cr.Name, "leader", int(leadIndex))
 
 	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, podName)
 	defer redisClient.Close()
