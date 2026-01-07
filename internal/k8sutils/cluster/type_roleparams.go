@@ -9,10 +9,10 @@ import (
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
-	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -27,6 +27,7 @@ type RedisClusterRoleParams struct {
 	// ============================================================================
 	RedisStatefulType string  // StatefulSet 타입 ("leader" 또는 "follower")
 	ExternalConfig    *string // 외부 ConfigMap 이름 (추가 Redis 설정)
+	ReplicaCounts     int32   // 레플리카 수
 
 	// ============================================================================
 	// Pod 레벨 설정 (PodSpec에 적용)
@@ -50,16 +51,12 @@ type RedisClusterRoleParams struct {
 	LivenessProbe  *corev1.Probe // Liveness Probe 설정 (컨테이너 생존 상태 확인)
 }
 
-func (redisClusterSTS *RedisClusterRoleParams) getReplicaCounts(cr *rcvb2.RedisCluster) int32 {
-	return cr.Spec.GetReplicaCounts(redisClusterSTS.RedisStatefulType)
-}
-
-func (redisClusterSTS RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	stsName := cr.Name + "-" + redisClusterSTS.RedisStatefulType
+func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+	stsName := cr.Name + "-" + redisClusterRoleParams.RedisStatefulType
 	stsLabels := k8smeta.GetRedisLabels(&k8smeta.RedisLabels{
 		Name:      stsName,
 		SetupType: k8smeta.Cluster,
-		Role:      redisClusterSTS.RedisStatefulType,
+		Role:      redisClusterRoleParams.RedisStatefulType,
 		Labels:    cr.Labels,
 	})
 	stsLabels["cluster"] = cr.Name
@@ -80,16 +77,16 @@ func (redisClusterSTS RedisClusterRoleParams) CreateRedisClusterSetup(ctx contex
 			StsParams: generateStatefulSetParams(
 				ctx,
 				cr,
-				redisClusterSTS.getReplicaCounts(cr),
-				redisClusterSTS,
+				redisClusterRoleParams.ReplicaCounts,
+				redisClusterRoleParams,
 			),
-			InitContainerParams: generateRedisClusterInitContainerParams(cr),
 			ContainerParams: generateRedisClusterContainerParams(ctx, cl, cr,
-				redisClusterSTS.ContainerSecurityContext,
-				redisClusterSTS.ReadinessProbe,
-				redisClusterSTS.LivenessProbe,
-				redisClusterSTS.RedisStatefulType,
-				redisClusterSTS.Resources,
+				redisClusterRoleParams.ContainerSecurityContext,
+				redisClusterRoleParams.ReadinessProbe,
+				redisClusterRoleParams.LivenessProbe,
+				redisClusterRoleParams.RedisStatefulType,
+				redisClusterRoleParams.Resources,
+				redisClusterRoleParams.ReplicaCounts,
 			),
 		})
 	if err != nil {
@@ -160,48 +157,20 @@ func generateStatefulSetParams(ctx context.Context,
 	return stsParams
 }
 
-func generateRedisClusterInitContainerParams(cr *rcvb2.RedisCluster) statefulset.InitContainerParameters {
-	trueProperty := true
-	initcontainerProp := statefulset.InitContainerParameters{}
-
-	// Init Container가 정의된 경우 파라미터 설정
-	if cr.Spec.InitContainer != nil {
-		initContainer := cr.Spec.InitContainer
-
-		// Init Container 기본 파라미터 설정
-		initcontainerProp = statefulset.InitContainerParameters{
-			Enabled:               initContainer.Enabled,         // Init Container 활성화 여부
-			RedisSetupType:        "cluster",                     // Redis 역할 (클러스터 모드)
-			Image:                 initContainer.Image,           // Init Container 이미지
-			ImagePullPolicy:       initContainer.ImagePullPolicy, // 이미지 풀 정책
-			Resources:             initContainer.Resources,       // 리소스 요구사항
-			AdditionalEnvVariable: initContainer.EnvVars,         // 추가 환경 변수
-			Command:               initContainer.Command,         // 실행 명령어
-			Arguments:             initContainer.Args,            // 명령어 인자
-			SecurityContext:       initContainer.SecurityContext, // 보안 컨텍스트
-		}
-
-		// 스토리지 볼륨 마운트 설정 (데이터 복원 등에 사용)
-		if cr.Spec.Storage != nil {
-			initcontainerProp.AdditionalVolumeMounts = cr.Spec.Storage.VolumeMount.VolumeMounts
-		}
-		// 데이터 영속성 활성화 (Init Container가 데이터 볼륨에 접근 가능하도록)
-		if cr.Spec.Storage != nil {
-			initcontainerProp.PersistenceEnabled = &trueProperty
-		}
-	}
-
-	return initcontainerProp
-}
-
-func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Interface, cr *rcvb2.RedisCluster,
+func generateRedisClusterContainerParams(
+	ctx context.Context,
+	cl kubernetes.Interface,
+	cr *rcvb2.RedisCluster,
 	securityContext *corev1.SecurityContext,
 	readinessProbeDef *corev1.Probe,
 	livenessProbeDef *corev1.Probe,
 	role string,
-	resources *corev1.ResourceRequirements) statefulset.ContainerParameters {
+	resources *corev1.ResourceRequirements,
+	replicaCounts int32) statefulset.ContainerParameters {
+
 	trueProperty := true
 	falseProperty := false
+
 	// 컨테이너 기본 파라미터 설정
 	containerProp := statefulset.ContainerParameters{
 		RedisSetupType:  "cluster",                                // cluster, sentinel, standalone 등등 가능
@@ -212,26 +181,27 @@ func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Inte
 		Port:            cr.Spec.ClientPort,                       // Redis 포트
 		HostPort:        cr.Spec.HostPort,                         // 호스트 포트 (HostNetwork 사용 시)
 	}
+
 	// Redis 메모리 설정 (메모리 제한의 최대 사용 비율)
-	// 우선순위: role별 RedisConfig > 최상위 RedisConfig
 	if maxPercentOfLimit := cr.Spec.GetRedisMaxPercentOfLimitConfig(role); maxPercentOfLimit != nil {
 		containerProp.MaxMemoryPercentOfLimit = maxPercentOfLimit
 	}
+
 	// 환경 변수 설정
 	if cr.Spec.EnvVars != nil {
 		containerProp.EnvVars = cr.Spec.EnvVars
 	}
+
 	// NodePort Service 타입인 경우, 각 Pod의 NodePort를 환경 변수로 설정
-	// Redis Cluster는 노드 간 통신을 위해 각 Pod의 NodePort를 알아야 합니다.
 	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-		envVars := util.Coalesce(containerProp.EnvVars, &[]corev1.EnvVar{})
+		envVars := ptr.Deref(containerProp.EnvVars, []corev1.EnvVar{})
 		// NodePort 모드 활성화 플래그
-		*envVars = append(*envVars, corev1.EnvVar{
+		envVars = append(envVars, corev1.EnvVar{
 			Name:  "NODEPORT",
 			Value: "true",
 		})
 		// 호스트 IP 환경 변수 (Pod가 실행 중인 노드의 IP)
-		*envVars = append(*envVars, corev1.EnvVar{
+		envVars = append(envVars, corev1.EnvVar{
 			Name: "HOST_IP",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
@@ -239,25 +209,19 @@ func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Inte
 				},
 			},
 		})
-
 		// 각 Pod의 NodePort 정보를 저장할 구조체
 		type ports struct {
 			announcePort    int // Redis 클라이언트 포트 (NodePort)
 			announceBusPort int // Redis 클러스터 버스 포트 (NodePort, 포트 + 10000)
 		}
 		nps := map[string]ports{} // Pod 이름을 키로 하는 NodePort 맵
-		replicas := cr.Spec.GetReplicaCounts(role)
 		// 각 Pod의 Service를 조회하여 NodePort 정보 수집
-		for i := 0; i < int(replicas); i++ {
-			// Pod별 Service 이름: {cr.Name}-{role}-{i}
-			// 예: redis-cluster-leader-0, redis-cluster-leader-1, ...
-			svc, err := getService(ctx, cl, cr.Namespace, cr.Name+"-"+redisSetupType+"-"+strconv.Itoa(i))
+		for i := 0; i < int(replicaCounts); i++ {
+			// 예: myrediscluster-leader-0, myrediscluster-leader-1, ...
+			svc, err := getService(ctx, cl, cr.Namespace, cr.Name+"-"+role+"-"+strconv.Itoa(i))
 			if err != nil {
-				log.FromContext(ctx).Error(err, "Cannot get service for Redis", "Setup.Type", redisSetupType)
+				log.FromContext(ctx).Error(err, "Cannot get service for redis pod", "%s-%s-%d in ns: %s", cr.Name, role, i, cr.Namespace)
 			} else {
-				// Service의 NodePort 정보 저장
-				// Ports[0]: Redis 클라이언트 포트
-				// Ports[1]: Redis 클러스터 버스 포트 (포트 + 10000)
 				nps[svc.Name] = ports{
 					announcePort:    int(svc.Spec.Ports[0].NodePort),
 					announceBusPort: int(svc.Spec.Ports[1].NodePort),
@@ -268,16 +232,16 @@ func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Inte
 		// 환경 변수 이름: announce_port_{service_name}, announce_bus_port_{service_name}
 		// 예: announce_port_redis_cluster_leader_0, announce_bus_port_redis_cluster_leader_0
 		for name, np := range nps {
-			*envVars = append(*envVars, corev1.EnvVar{
+			envVars = append(envVars, corev1.EnvVar{
 				Name:  "announce_port_" + strings.ReplaceAll(name, "-", "_"), // 하이픈을 언더스코어로 변경
 				Value: strconv.Itoa(np.announcePort),
 			})
-			*envVars = append(*envVars, corev1.EnvVar{
+			envVars = append(envVars, corev1.EnvVar{
 				Name:  "announce_bus_port_" + strings.ReplaceAll(name, "-", "_"),
 				Value: strconv.Itoa(np.announceBusPort),
 			})
 		}
-		containerProp.EnvVars = envVars
+		containerProp.EnvVars = ptr.To(envVars)
 	}
 	// 추가 볼륨 마운트 설정
 	if cr.Spec.Storage != nil {
@@ -366,4 +330,14 @@ func getDeletionPropagationStrategy(annotations map[string]string) *metav1.Delet
 	}
 
 	return nil
+}
+
+func getService(ctx context.Context, k8sClient kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
+	serviceInfo, err := k8sClient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		log.FromContext(ctx).V(1).Info("Redis service get action is failed")
+		return nil, err
+	}
+	log.FromContext(ctx).V(1).Info("Redis service get action is successful")
+	return serviceInfo, nil
 }
