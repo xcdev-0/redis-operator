@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	redisclusterv1beta2 "github.com/xc/redis-operator/api/v1beta2"
+	redisclusterv1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	// +kubebuilder:scaffold:imports
 )
 
