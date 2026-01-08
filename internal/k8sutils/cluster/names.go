@@ -8,21 +8,21 @@ func GetStatefulSetName(clusterName, role string) string {
 	return clusterName + "-" + role
 }
 
-// GetServiceName은 Redis Cluster 기본 Service 이름을 생성합니다.
-// 예: GetServiceName("clustername", "leader") -> "clustername-leader"
+// 예: GetServiceName("clustername", "leader") ->
+// "clustername-leader"
 func GetServiceName(clusterName, role string) string {
 	return clusterName + "-" + role
+}
+
+// 예: GetNodePortServiceName("clustername", "leader", 0) ->
+// "clustername-leader-0"
+func GetNodePortServiceName(clusterName, role string, index int) string {
+	return clusterName + "-" + role + "-" + strconv.Itoa(index)
 }
 
 // GetPodName은 Redis Cluster Pod 이름을 생성합니다.
 // 예: GetPodName("clustername", "leader", 0) -> "clustername-leader-0"
 func GetPodName(clusterName, role string, index int) string {
-	return clusterName + "-" + role + "-" + strconv.Itoa(index)
-}
-
-// GetNodePortServiceName은 Redis Cluster NodePort Service 이름을 생성합니다.
-// 예: GetNodePortServiceName("clustername", "leader", 0) -> "clustername-leader-0"
-func GetNodePortServiceName(clusterName, role string, index int) string {
 	return clusterName + "-" + role + "-" + strconv.Itoa(index)
 }
 

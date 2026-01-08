@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisutils"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -42,7 +42,7 @@ func clusterNodes(ctx context.Context, redisClient *redis.Client) ([]clusterNode
 
 // getRedisNodeID는 지정된 Pod의 Redis 노드 ID를 반환합니다.
 func getRedisNodeID(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, pod RedisDetails) string {
-	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, pod.PodName)
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, pod.PodName)
 	defer redisClient.Close()
 
 	pong, err := redisClient.Ping(ctx).Result()
@@ -70,7 +70,7 @@ func getRedisNodeID(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 // CheckRedisNodeCount는 클러스터 내 지정된 타입의 노드 개수를 반환합니다.
 // nodeType이 빈 문자열이면 전체 노드 개수를 반환합니다.
 func CheckRedisNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) int32 {
-	redisClient := redisutils.ConfigureRedisClient(ctx, client, cr, GetFirstLeaderPodName(cr.Name))
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, GetFirstLeaderPodName(cr.Name))
 	defer redisClient.Close()
 	var redisNodeType string
 	clusterNodes, err := clusterNodes(ctx, redisClient)

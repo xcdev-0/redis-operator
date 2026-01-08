@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
-	redisutils "github.com/xcdev-0/redis-operator/internal/k8sutils/redisutils"
+	redisutils "github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )

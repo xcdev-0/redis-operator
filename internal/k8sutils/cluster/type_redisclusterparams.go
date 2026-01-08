@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -22,33 +23,23 @@ type clusterNodesResponse []string
 // RedisClusterRoleParams는 Redis Cluster StatefulSet 생성을 위한 역할별(Leader/Follower) 차별화 파라미터를 담는 구조체입니다.
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 각각 다른 설정을 전달하기 위해 사용됩니다.
 type RedisClusterRoleParams struct {
-	// ============================================================================
 	// 공통 설정
-	// ============================================================================
 	RedisClusterRole string  // Redis Cluster 역할 ("leader" 또는 "follower")
 	ExternalConfig   *string // 외부 ConfigMap 이름 (추가 Redis 설정)
 	ReplicaCounts    int32   // 레플리카 수
 
-	// ============================================================================
 	// Pod 레벨 설정 (PodSpec에 적용)
-	// ============================================================================
-	// 스케줄링 관련
-	Affinity                  *corev1.Affinity                  // Pod 어피니티 규칙 (노드/Pod 간 선호도)
-	NodeSelector              map[string]string                 // Pod가 스케줄링될 노드를 선택하는 라벨
-	TopologySpreadConstraints []corev1.TopologySpreadConstraint // Pod 분산 제약 조건 (노드/존 간 균등 분산)
-	Tolerations               *[]corev1.Toleration              // Pod 톨러레이션 (테인트 허용)
-	// 생명주기 관련
-	TerminationGracePeriodSeconds *int64 // Pod 종료 유예 기간 (초)
+	Affinity                      *corev1.Affinity                  // Pod 어피니티 규칙 (노드/Pod 간 선호도)
+	NodeSelector                  map[string]string                 // Pod가 스케줄링될 노드를 선택하는 라벨
+	TopologySpreadConstraints     []corev1.TopologySpreadConstraint // Pod 분산 제약 조건 (노드/존 간 균등 분산)
+	Tolerations                   *[]corev1.Toleration              // Pod 톨러레이션 (테인트 허용)
+	TerminationGracePeriodSeconds *int64                            // Pod 종료 유예 기간 (초)
 
-	// ============================================================================
 	// 컨테이너 레벨 설정 (Container에 적용)
-	// ============================================================================
-	// 리소스 및 보안
 	Resources                *corev1.ResourceRequirements // 컨테이너 리소스 요구사항 (CPU, 메모리)
 	ContainerSecurityContext *corev1.SecurityContext      // 컨테이너 보안 컨텍스트 (Container.SecurityContext)
-	// 헬스체크
-	ReadinessProbe *corev1.Probe // Readiness Probe 설정 (컨테이너 준비 상태 확인)
-	LivenessProbe  *corev1.Probe // Liveness Probe 설정 (컨테이너 생존 상태 확인)
+	ReadinessProbe           *corev1.Probe                // Readiness Probe 설정 (컨테이너 준비 상태 확인)
+	LivenessProbe            *corev1.Probe                // Liveness Probe 설정 (컨테이너 생존 상태 확인)
 }
 
 func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
@@ -67,33 +58,43 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx
 		Labels:      stsLabels,
 		Annotations: stsAnnotations,
 	})
-	err := statefulset.CreateOrUpdateStateFul(
+	stsParams := generateStatefulSetParams(
+		ctx,
+		cr,
+		redisClusterRoleParams.ReplicaCounts,
+		redisClusterRoleParams,
+	)
+	containerParams, err := generateRedisClusterContainerParams(ctx, cl, cr,
+		redisClusterRoleParams.ContainerSecurityContext,
+		redisClusterRoleParams.ReadinessProbe,
+		redisClusterRoleParams.LivenessProbe,
+		redisClusterRoleParams.RedisClusterRole,
+		redisClusterRoleParams.Resources,
+		redisClusterRoleParams.ReplicaCounts,
+	)
+	if err != nil {
+		return err
+	}
+
+	err = statefulset.CreateOrUpdateStateFul(
 		ctx,
 		cl,
 		&statefulset.StatefulSetRequest{
-			Namespace:      cr.Namespace,
-			StsObjectMeta:  stsObjectMeta,
-			OwnerReference: k8smeta.RedisClusterAsOwner(cr),
-			StsParams: generateStatefulSetParams(
-				ctx,
-				cr,
-				redisClusterRoleParams.ReplicaCounts,
-				redisClusterRoleParams,
-			),
-			ContainerParams: generateRedisClusterContainerParams(ctx, cl, cr,
-				redisClusterRoleParams.ContainerSecurityContext,
-				redisClusterRoleParams.ReadinessProbe,
-				redisClusterRoleParams.LivenessProbe,
-				redisClusterRoleParams.RedisClusterRole,
-				redisClusterRoleParams.Resources,
-				redisClusterRoleParams.ReplicaCounts,
-			),
+			Namespace:       cr.Namespace,
+			StsObjectMeta:   stsObjectMeta,
+			OwnerReference:  k8smeta.RedisClusterAsOwner(cr),
+			StsParams:       stsParams,
+			ContainerParams: containerParams,
 		})
 	if err != nil {
 		return err
 	}
 	return nil
 }
+
+// ========================================================
+// StatefulSet 파라미터 생성
+// ========================================================
 func generateStatefulSetParams(ctx context.Context,
 	cr *rcvb2.RedisCluster,
 	replicas int32,
@@ -157,6 +158,9 @@ func generateStatefulSetParams(ctx context.Context,
 	return stsParams
 }
 
+// ========================================================
+// Main Container 파라미터 생성
+// ========================================================
 func generateRedisClusterContainerParams(
 	ctx context.Context,
 	cl kubernetes.Interface,
@@ -166,10 +170,7 @@ func generateRedisClusterContainerParams(
 	livenessProbeDef *corev1.Probe,
 	role string,
 	resources *corev1.ResourceRequirements,
-	replicaCounts int32) statefulset.ContainerParameters {
-
-	trueProperty := true
-	falseProperty := false
+	replicaCounts int32) (statefulset.ContainerParameters, error) {
 
 	// 컨테이너 기본 파라미터 설정
 	containerProp := statefulset.ContainerParameters{
@@ -249,27 +250,26 @@ func generateRedisClusterContainerParams(
 	}
 	// Redis 비밀번호 인증 설정
 	if cr.Spec.KubernetesConfig.ExistingPasswordSecret != nil {
-		containerProp.EnabledPassword = &trueProperty
-		containerProp.PasswordSecretName = cr.Spec.KubernetesConfig.ExistingPasswordSecret.Name
-		containerProp.PasswordSecretKey = cr.Spec.KubernetesConfig.ExistingPasswordSecret.Key
+		if cr.Spec.KubernetesConfig.ExistingPasswordSecret.Name == nil {
+			return containerProp, fmt.Errorf("ExistingPasswordSecret.Name is required but not set for RedisCluster %s/%s", cr.Namespace, cr.Name)
+		}
+		if cr.Spec.KubernetesConfig.ExistingPasswordSecret.Key == nil {
+			return containerProp, fmt.Errorf("ExistingPasswordSecret.Key is required but not set for RedisCluster %s/%s", cr.Namespace, cr.Name)
+		}
+		containerProp.EnabledPassword = true
+		containerProp.PasswordSecretName = *cr.Spec.KubernetesConfig.ExistingPasswordSecret.Name
+		containerProp.PasswordSecretKey = *cr.Spec.KubernetesConfig.ExistingPasswordSecret.Key
 	} else {
-		containerProp.EnabledPassword = &falseProperty
+		containerProp.EnabledPassword = false
 	}
 	// Redis Exporter 사이드카 설정 (메트릭 수집용)
 	if cr.Spec.RedisExporter != nil {
 		containerProp.RedisExporterImage = cr.Spec.RedisExporter.Image
 		containerProp.RedisExporterImagePullPolicy = cr.Spec.RedisExporter.ImagePullPolicy
 		containerProp.RedisExporterSecurityContext = cr.Spec.RedisExporter.SecurityContext
-
-		if cr.Spec.RedisExporter.Resources != nil {
-			containerProp.RedisExporterResources = cr.Spec.RedisExporter.Resources
-		}
-		if cr.Spec.RedisExporter.EnvVars != nil {
-			containerProp.RedisExporterEnv = cr.Spec.RedisExporter.EnvVars
-		}
-		if cr.Spec.RedisExporter.Port != nil {
-			containerProp.RedisExporterPort = cr.Spec.RedisExporter.Port
-		}
+		containerProp.RedisExporterResources = cr.Spec.RedisExporter.Resources
+		containerProp.RedisExporterEnv = cr.Spec.RedisExporter.EnvVars
+		containerProp.RedisExporterPort = cr.Spec.RedisExporter.Port
 	}
 	// Health Check Probe 설정
 	if readinessProbeDef != nil {
@@ -279,10 +279,10 @@ func generateRedisClusterContainerParams(
 		containerProp.LivenessProbe = livenessProbeDef
 	}
 	// 데이터 영속성 활성화 여부
-	if cr.Spec.Storage != nil && cr.Spec.PersistenceEnabled != nil && *cr.Spec.PersistenceEnabled {
-		containerProp.PersistenceEnabled = &trueProperty
+	if cr.Spec.Storage != nil && cr.Spec.IsPersistenceEnabled() {
+		containerProp.PersistenceEnabled = true
 	} else {
-		containerProp.PersistenceEnabled = &falseProperty
+		containerProp.PersistenceEnabled = false
 	}
 	// TLS 설정
 	if cr.Spec.TLS != nil {
@@ -300,7 +300,7 @@ func generateRedisClusterContainerParams(
 			PersistentVolumeClaimName: cr.Spec.ACL.PersistentVolumeClaimName,
 		}
 	}
-	return containerProp
+	return containerProp, nil
 }
 
 // getDeletionPropagationStrategy는 어노테이션을 기반으로 삭제 전파 전략을 반환합니다.
@@ -330,14 +330,4 @@ func getDeletionPropagationStrategy(annotations map[string]string) *metav1.Delet
 	}
 
 	return nil
-}
-
-func getService(ctx context.Context, k8sClient kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
-	serviceInfo, err := k8sClient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		log.FromContext(ctx).V(1).Info("Redis service get action is failed")
-		return nil, err
-	}
-	log.FromContext(ctx).V(1).Info("Redis service get action is successful")
-	return serviceInfo, nil
 }

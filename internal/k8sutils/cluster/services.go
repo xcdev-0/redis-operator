@@ -1,4 +1,4 @@
-package services
+package cluster
 
 import (
 	"context"
@@ -126,7 +126,7 @@ func getService(ctx context.Context, k8sClient kubernetes.Interface, namespace s
 	return serviceInfo, nil
 }
 
-func CreateOrUpdateService(ctx context.Context, opts ServiceOptions) error {
+func createOrUpdateService(ctx context.Context, opts ServiceOptions) error {
 	serviceDef := generateServiceDef(opts)
 	storedService, err := getService(ctx, opts.K8sClient, opts.Namespace, opts.ServiceObjectMeta.GetName())
 	if err != nil {

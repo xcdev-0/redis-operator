@@ -6,7 +6,6 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/services"
 	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -63,7 +62,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	}
 
 	var err error
-	err = services.CreateOrUpdateService(ctx, services.ServiceOptions{
+	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
 		ServiceObjectMeta:    objectMeta,
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
@@ -91,7 +90,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		headlessExtraPorts = append(headlessExtraPorts, busPort)
 	}
 	// Headless Service 생성 (ClusterIP 타입, headless=true)
-	err = services.CreateOrUpdateService(ctx, services.ServiceOptions{
+	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
 		ServiceObjectMeta:    headlessObjectMeta,
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
@@ -119,7 +118,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		additionalExtraPorts = append(additionalExtraPorts, busPort)
 	}
 	if cr.Spec.KubernetesConfig.ShouldCreateAdditionalService() {
-		err = services.CreateOrUpdateService(ctx, services.ServiceOptions{
+		err = createOrUpdateService(ctx, ServiceOptions{
 			Namespace:            cr.Namespace,
 			ServiceObjectMeta:    additionalObjectMeta,
 			OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
@@ -142,7 +141,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		Labels:      labels,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, epp),
 	})
-	err = services.CreateOrUpdateService(ctx, services.ServiceOptions{
+	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
 		ServiceObjectMeta:    masterObjectMeta,
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
@@ -160,7 +159,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 
 	// 5. nodeport type 일경우 추가로 생성
 	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-		err = rcs.createOrUpdateClusterNodePortService(ctx, cr, cl)
+		err = createOrUpdateClusterNodePortService(ctx, cr, cl, rcs.role)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Cannot create nodeport service for Redis", "Setup.Type", rcs.role)
 			return err
@@ -169,9 +168,9 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	return nil
 }
 
-func (rcs RedisClusterService) createOrUpdateClusterNodePortService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func createOrUpdateClusterNodePortService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface, role string) error {
 	var replicaCount int32
-	if rcs.role == "leader" {
+	if role == "leader" {
 		replicaCount = cr.Spec.GetLeaderReplicaCount()
 	} else {
 		replicaCount = cr.Spec.GetFollowerReplicaCount()
@@ -180,12 +179,12 @@ func (rcs RedisClusterService) createOrUpdateClusterNodePortService(ctx context.
 	// 각 Pod마다 개별 NodePort Service 생성
 	for i := 0; i < int(replicaCount); i++ {
 		// 예: redisutils-cluster-leader-0, redisutils-cluster-leader-1, ...
-		serviceName := GetNodePortServiceName(cr.Name, rcs.role, i)
+		serviceName := GetNodePortServiceName(cr.Name, role, i)
 		serviceLabels := k8smeta.GetRedisLabels(
 			&k8smeta.RedisLabels{
-				Name:      GetServiceName(cr.Name, rcs.role),
+				Name:      GetServiceName(cr.Name, role),
 				SetupType: k8smeta.Cluster,
-				Role:      rcs.role,
+				Role:      role,
 				Labels: map[string]string{
 					// sts가 팟에게 자동으로 붙이는 레이블, 특정 팟만 선택하기 위해 사용
 					"statefulset.kubernetes.io/pod-name": serviceName,
@@ -211,7 +210,7 @@ func (rcs RedisClusterService) createOrUpdateClusterNodePortService(ctx context.
 			},
 		}
 		// NodePort Service 생성 (각 Pod마다 고유한 NodePort 할당)
-		err := services.CreateOrUpdateService(ctx, services.ServiceOptions{
+		err := createOrUpdateService(ctx, ServiceOptions{
 			Namespace:            cr.Namespace,
 			ServiceObjectMeta:    serviceObjectMeta,
 			OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
@@ -222,7 +221,7 @@ func (rcs RedisClusterService) createOrUpdateClusterNodePortService(ctx context.
 			ExtraPorts:           []corev1.ServicePort{busPort},
 		})
 		if err != nil {
-			log.FromContext(ctx).Error(err, "Cannot create nodeport service for Redis", "Setup.Type", rcs.role)
+			log.FromContext(ctx).Error(err, "Cannot create nodeport service for Redis", "Setup.Type", role)
 			return err
 		}
 	}
