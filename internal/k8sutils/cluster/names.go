@@ -26,9 +26,9 @@ func GetPodName(clusterName, role string, index int) string {
 	return clusterName + "-" + role + "-" + strconv.Itoa(index)
 }
 
-// GetFirstLeaderPodName은 첫 번째 Leader Pod 이름을 반환합니다.
+// GetExecutePodName은 첫 번째 Leader Pod 이름을 반환합니다.
 // 이는 클러스터 초기화나 조회 작업에서 자주 사용됩니다.
-// 예: GetFirstLeaderPodName("clustername") -> "clustername-leader-0"
-func GetFirstLeaderPodName(clusterName string) string {
+// 예: GetExecutePodName("clustername") -> "clustername-leader-0"
+func GetExecutePodName(clusterName string) string {
 	return clusterName + "-leader-0"
 }

@@ -250,15 +250,17 @@ func generateRedisClusterContainerParams(
 	}
 	// Redis 비밀번호 인증 설정
 	if cr.Spec.KubernetesConfig.ExistingPasswordSecret != nil {
-		if cr.Spec.KubernetesConfig.ExistingPasswordSecret.Name == nil {
-			return containerProp, fmt.Errorf("ExistingPasswordSecret.Name is required but not set for RedisCluster %s/%s", cr.Namespace, cr.Name)
+		secretName, err := cr.Spec.KubernetesConfig.ExistingPasswordSecret.GetName()
+		if err != nil {
+			return containerProp, fmt.Errorf("%w for RedisCluster %s/%s", err, cr.Namespace, cr.Name)
 		}
-		if cr.Spec.KubernetesConfig.ExistingPasswordSecret.Key == nil {
-			return containerProp, fmt.Errorf("ExistingPasswordSecret.Key is required but not set for RedisCluster %s/%s", cr.Namespace, cr.Name)
+		secretKey, err := cr.Spec.KubernetesConfig.ExistingPasswordSecret.GetKey()
+		if err != nil {
+			return containerProp, fmt.Errorf("%w for RedisCluster %s/%s", err, cr.Namespace, cr.Name)
 		}
 		containerProp.EnabledPassword = true
-		containerProp.PasswordSecretName = *cr.Spec.KubernetesConfig.ExistingPasswordSecret.Name
-		containerProp.PasswordSecretKey = *cr.Spec.KubernetesConfig.ExistingPasswordSecret.Key
+		containerProp.PasswordSecretName = secretName
+		containerProp.PasswordSecretKey = secretKey
 	} else {
 		containerProp.EnabledPassword = false
 	}
