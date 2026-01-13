@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
@@ -146,41 +147,109 @@ func RebalanceRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, 
 	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd, executePodName)
 }
 
-func executeFailoverCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) error {
+// executeClusterResetCommand는 지정된 role의 모든 Pod에서 CLUSTER RESET 명령을 실행합니다.
+// 실패 시 FLUSHALL 후 재시도합니다.
+func executeClusterResetCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) error {
+	var replicaCount int32
+	switch nodeType {
+	case "leader":
+		replicaCount = cr.Spec.GetLeaderReplicaCount()
+	case "follower":
+		replicaCount = cr.Spec.GetFollowerReplicaCount()
+	default:
+		log.FromContext(ctx).Error(fmt.Errorf("unknown node type"), "Unknown node type", "nodeType", nodeType)
+		return fmt.Errorf("unknown node type: %s", nodeType)
+	}
+
+	for podIndex := 0; podIndex < int(replicaCount); podIndex++ {
+		podName := GetPodName(cr.Name, nodeType, podIndex)
+		log.FromContext(ctx).V(1).Info("Executing redis cluster reset operations", "Redis Node", podName)
+
+		// CLUSTER RESET 명령 실행
+		ri := &RedisInvocation{
+			Command:      []string{"redis-cli"},
+			RedisCommand: []string{"CLUSTER", "RESET"},
+		}
+		ri.AddAuthAndTLS(ctx, client, cr)
+
+		_, err := redisservice.ExecuteCommandInPodWithResult(ctx, client, cr, ri.Args(), podName)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Redis CLUSTER RESET command failed, attempting FLUSHALL and retry", "Pod", podName)
+
+			// FLUSHALL 실행
+			flushRi := &RedisInvocation{
+				Command:      []string{"redis-cli"},
+				RedisCommand: []string{"FLUSHALL"},
+			}
+			flushRi.AddAuthAndTLS(ctx, client, cr)
+
+			_, flushErr := redisservice.ExecuteCommandInPodWithResult(ctx, client, cr, flushRi.Args(), podName)
+			if flushErr != nil {
+				log.FromContext(ctx).Error(flushErr, "Redis FLUSHALL command failed", "Pod", podName)
+				return fmt.Errorf("failed to execute FLUSHALL on pod %s: %w", podName, flushErr)
+			}
+
+			// FLUSHALL 성공 후 CLUSTER RESET 재시도
+			_, retryErr := redisservice.ExecuteCommandInPodWithResult(ctx, client, cr, ri.Args(), podName)
+			if retryErr != nil {
+				log.FromContext(ctx).Error(retryErr, "Redis CLUSTER RESET command failed after FLUSHALL retry", "Pod", podName)
+				return fmt.Errorf("failed to execute CLUSTER RESET after FLUSHALL on pod %s: %w", podName, retryErr)
+			}
+		}
+
+		log.FromContext(ctx).V(1).Info("Redis cluster reset executed successfully", "Pod", podName)
+	}
+
 	return nil
 }
-func CreateSingleLeaderRedisCommand(ctx context.Context, cr *rcvb2.RedisCluster) RedisInvocation {
-	return RedisInvocation{
-		Command:      []string{"redis-cli", "--cluster", "create"},
-		Flags:        []string{"-h", "localhost", "-p", "6379"},
-		RedisCommand: []string{"CLUSTER", "ADDSLOTS", "1", "2", "3"},
+func createSingleLeaderRedisCommand(ctx context.Context, cr *rcvb2.RedisCluster) RedisInvocation {
+	cmd := RedisInvocation{
+		Command:      []string{"redis-cli"},
+		RedisCommand: []string{"CLUSTER", "ADDSLOTS"},
 	}
+	for i := 0; i < 16384; i++ {
+		cmd.RedisCommand = append(cmd.RedisCommand, strconv.Itoa(i))
+	}
+	log.FromContext(ctx).V(1).Info("Generating Redis Add Slots command for single node cluster",
+		"BaseCommand", []string{"redis-cli", "CLUSTER", "ADDSLOTS"},
+		"SlotsRange", "0-16383",
+		"TotalSlots", 16384)
+
+	return cmd
 }
 func CreateMultipleLeaderRedisCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) RedisInvocation {
-	return RedisInvocation{
-		Command:      []string{"redis-cli", "--cluster", "create"},
-		Flags:        []string{"-h", "localhost", "-p", "6379"},
-		RedisCommand: []string{"CLUSTER", "ADDSLOTS", "1", "2", "3"},
+	cmd := RedisInvocation{
+		Command: []string{"redis-cli", "--cluster", "create"},
 	}
+	replicas := cr.Spec.GetLeaderReplicaCount()
+	for podIndex := 0; podIndex < int(replicas); podIndex++ {
+		rd := redisservice.RedisDetails{
+			PodName:   GetPodName(cr.Name, "leader", podIndex),
+			Namespace: cr.Namespace,
+		}
+		cmd.AddCommand([]string{redisservice.GetEndpoint(ctx, client, cr, rd)})
+	}
+	cmd.AddFlags([]string{"--cluster-yes"})
+	return cmd
 }
-func ExecuteRedisClusterCommand(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+func ExecuteRedisClusterCommand(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
 	var cmd RedisInvocation
 	executePodName := GetExecutionPodName(cr.Name)
 	replicas := cr.Spec.GetLeaderReplicaCount()
+
 	switch int(replicas) {
 	case 1:
-		err := executeFailoverCommand(ctx, k8sClient, cr, "leader")
+		err := executeClusterResetCommand(ctx, k8sClient, cr, "leader")
 		if err != nil {
-			log.FromContext(ctx).Error(err, "error executing failover command")
+			log.FromContext(ctx).Error(err, "error executing cluster reset command")
 		}
-		cmd = CreateSingleLeaderRedisCommand(ctx, cr)
+		cmd = createSingleLeaderRedisCommand(ctx, cr)
 	default:
 		cmd = CreateMultipleLeaderRedisCommand(ctx, k8sClient, cr)
 	}
 	cmd.AddAuthAndTLS(ctx, k8sClient, cr)
 
 	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executePodName)
-	return nil
 }
 
 func AddRedisNodeToCluster(ctx context.Context, k8sClient kubernetes.Interface, instance *rcvb2.RedisCluster) error {
