@@ -17,16 +17,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type clusterNodesResponse []string
-
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 사용됩니다.
 // RedisClusterRoleParams는 Redis Cluster StatefulSet 생성을 위한 역할별(Leader/Follower) 차별화 파라미터를 담는 구조체입니다.
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 각각 다른 설정을 전달하기 위해 사용됩니다.
 type RedisClusterRoleParams struct {
 	// 공통 설정
-	RedisClusterRole string  // Redis Cluster 역할 ("leader" 또는 "follower")
-	ExternalConfig   *string // 외부 ConfigMap 이름 (추가 Redis 설정)
-	ReplicaCounts    int32   // 레플리카 수
+	Role           string  // Redis Cluster 역할 ("leader" 또는 "follower")
+	ExternalConfig *string // 외부 ConfigMap 이름 (추가 Redis 설정)
+	ReplicaCounts  int32   // 레플리카 수
 
 	// Pod 레벨 설정 (PodSpec에 적용)
 	Affinity                      *corev1.Affinity                  // Pod 어피니티 규칙 (노드/Pod 간 선호도)
@@ -43,14 +41,13 @@ type RedisClusterRoleParams struct {
 }
 
 func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	stsName := GetStatefulSetName(cr.Name, redisClusterRoleParams.RedisClusterRole)
-	stsLabels := k8smeta.GetRedisLabels(&k8smeta.RedisLabels{
-		Name:      stsName,
-		SetupType: k8smeta.Cluster,
-		Role:      redisClusterRoleParams.RedisClusterRole,
-		Labels:    cr.Labels,
+	stsName := GetStatefulSetName(cr.Name, redisClusterRoleParams.Role)
+	stsLabels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
+		STSName:          stsName,
+		Role:             redisClusterRoleParams.Role,
+		AdditionalLabels: cr.Labels,
+		ClusterName:      cr.Name,
 	})
-	stsLabels["cluster"] = cr.Name
 	stsAnnotations := k8smeta.GenerateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	stsObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        stsName,
@@ -68,7 +65,7 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx
 		redisClusterRoleParams.ContainerSecurityContext,
 		redisClusterRoleParams.ReadinessProbe,
 		redisClusterRoleParams.LivenessProbe,
-		redisClusterRoleParams.RedisClusterRole,
+		redisClusterRoleParams.Role,
 		redisClusterRoleParams.Resources,
 		redisClusterRoleParams.ReplicaCounts,
 	)

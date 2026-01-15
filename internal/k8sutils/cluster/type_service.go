@@ -31,12 +31,12 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		epp = k8smeta.DisableMetrics
 	}
 
-	// 1. cluster ip 타입 서비스
-	labels := k8smeta.GetRedisLabels(&k8smeta.RedisLabels{
-		Name:      serviceName,
-		SetupType: k8smeta.Cluster,
-		Role:      rcs.role,
-		Labels:    cr.Labels,
+	// 1. cluster ip, headless, additional service 생성
+	labels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
+		STSName:          GetStatefulSetName(cr.Name, rcs.role),
+		Role:             rcs.role,
+		AdditionalLabels: cr.Labels,
+		ClusterName:      cr.Name,
 	})
 
 	objectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
@@ -135,12 +135,17 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		}
 	}
 	// 4. master service
+	// 일반 Service는 StatefulSet 역할(leader/follower)을 기반으로 선택하지만,
+	// Master Service는 실제 Redis 역할(master/slave)을 기반으로 선택합니다.
+	// 따라서 redis-current-role: master 라벨을 사용하여 실제 master 역할을 하는 Pod를 선택합니다.
+	metaLabels := k8smeta.GetCurrentMasterSelectorLabels(cr.Name, consts.LabelValueMaster)
 	masterObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        cr.Name + "-master",
 		Namespace:   cr.Namespace,
-		Labels:      labels,
+		Labels:      metaLabels,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, epp),
 	})
+
 	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
 		ServiceObjectMeta:    masterObjectMeta,
@@ -180,17 +185,16 @@ func createOrUpdateClusterNodePortService(ctx context.Context, cr *rcvb2.RedisCl
 	for i := 0; i < int(replicaCount); i++ {
 		// 예: redisutils-cluster-leader-0, redisutils-cluster-leader-1, ...
 		serviceName := GetNodePortServiceName(cr.Name, role, i)
-		serviceLabels := k8smeta.GetRedisLabels(
+		serviceLabels := k8smeta.GetRedisClusterLabels(
 			&k8smeta.RedisLabels{
-				Name:      GetServiceName(cr.Name, role),
-				SetupType: k8smeta.Cluster,
-				Role:      role,
-				Labels: map[string]string{
+				STSName: GetStatefulSetName(cr.Name, role),
+				Role:    role,
+				AdditionalLabels: map[string]string{
 					// sts가 팟에게 자동으로 붙이는 레이블, 특정 팟만 선택하기 위해 사용
 					"statefulset.kubernetes.io/pod-name": serviceName,
 				},
-			},
-		)
+				ClusterName: cr.Name,
+			})
 		serviceAnnotations := k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, k8smeta.DisableMetrics)
 		serviceObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 			Name:        serviceName,

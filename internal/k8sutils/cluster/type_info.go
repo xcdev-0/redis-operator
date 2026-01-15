@@ -12,6 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+type clusterNodesResponse []string
+
 // ClusterInfoSnapshot is a small parsed view of INFO cluster.
 type ClusterInfoSnapshot struct {
 	State         string
@@ -102,22 +104,15 @@ func CheckIfClusterAlreadyBootstrapped(ctx context.Context, redisClient *redis.C
 
 	nodeLines := countClusterNodesLines(nodesOut)
 
-	// Conservative "already bootstrapped" signals:
-	// - slots_assigned > 0  : someone assigned slots (single node addslotsrange or cluster create)
-	// - known_nodes > 1     : node has met others / has cluster config of multiple nodes
-	// - cluster nodes lines > 1 : more than itself is visible
-	//
-	// Note: cluster_state can be "fail" while still being bootstrapped (e.g., missing nodes).
-
 	already := false
 	if snap.SlotsAssigned > 0 {
-		already = true
+		already = true // 슬롯이 할당되었으면 이미 초기화된 것으로 간주
 	}
 	if snap.KnownNodes > 1 {
-		already = true
+		already = true // 노드가 다른 노드와 만났으면 이미 초기화된 것으로 간주
 	}
 	if nodeLines > 1 {
-		already = true
+		already = true // 노드 라인이 1개 이상이면 이미 초기화된 것으로 간주
 	}
 
 	logger.V(1).Info("cluster bootstrap check",
@@ -133,10 +128,31 @@ func CheckIfClusterAlreadyBootstrapped(ctx context.Context, redisClient *redis.C
 
 // CheckIfClusterAlreadyBootstrappedFromK8s는 Kubernetes client를 사용하여
 // 클러스터가 이미 초기화되었는지 확인합니다.
+// 모든 leader Pod를 확인하여 하나라도 클러스터가 초기화되었으면 true를 반환합니다.
 func CheckIfClusterAlreadyBootstrappedFromK8s(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (bool, *ClusterInfoSnapshot, int, error) {
-	executionPodName := GetExecutionPodName(cr.Name)
-	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executionPodName)
-	defer redisClient.Close()
+	logger := log.FromContext(ctx)
+	replicaCount := cr.Spec.GetLeaderReplicaCount()
 
-	return CheckIfClusterAlreadyBootstrapped(ctx, redisClient)
+	// 모든 leader Pod를 확인
+	for podIndex := 0; podIndex < int(replicaCount); podIndex++ {
+		podName := GetPodName(cr.Name, "leader", podIndex)
+		redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, podName)
+
+		alreadyBootstrapped, snap, nodeLines, err := CheckIfClusterAlreadyBootstrapped(ctx, redisClient)
+		redisClient.Close()
+
+		if err != nil {
+			// 에러가 발생해도 다음 Pod를 확인
+			logger.V(1).Info("Failed to check cluster bootstrap status on pod, trying next pod", "Pod", podName, "Error", err)
+			continue
+		}
+
+		if alreadyBootstrapped {
+			// 하나라도 초기화되었으면 true 반환
+			return true, snap, nodeLines, nil
+		}
+	}
+
+	// 모든 Pod를 확인했지만 초기화되지 않음
+	return false, nil, 0, nil
 }

@@ -119,27 +119,29 @@ func getAttachedFollowerNodeIDs(ctx context.Context, redisClient *redis.Client, 
 	return followerIDs
 }
 
-// IsRedisLeader는 지정된 인덱스의 Pod이 Redis 리더인지 확인합니다.
-func IsRedisLeader(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, leadIndex int32) bool {
+func IsLeaderNode(ctx context.Context, redisClient *redis.Client) (bool, error) {
+	info, err := redisClient.Info(ctx, "replication").Result()
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(info, "\r\n") {
+		if strings.HasPrefix(line, "role:") {
+			return strings.TrimPrefix(line, "role:") == "master", nil
+		}
+	}
+	return false, nil
+}
+
+// IsLeaderPod는 지정된 인덱스의 Pod이 Redis 리더인지 확인합니다.
+func IsLeaderPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, leadIndex int32) bool {
 	podName := GetPodName(cr.Name, "leader", int(leadIndex))
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, podName)
 	defer redisClient.Close()
-
-	info, err := redisClient.Info(ctx, "replication").Result()
+	isMaster, err := IsLeaderNode(ctx, redisClient)
 	if err != nil {
 		return false
 	}
-	// role:master
-	// connected_slaves:2
-	// slave0:ip=127.0.0.1,port=30004,state=online,offset=12345,lag=0
-	// ...
-	for _, line := range strings.Split(info, "\r\n") {
-		if strings.HasPrefix(line, "role:") {
-			return strings.TrimPrefix(line, "role:") == "master"
-		}
-	}
-
-	return false
+	return isMaster
 }
 
 // nodeRoles는 노드의 역할 목록을 반환합니다.
@@ -184,4 +186,25 @@ func GetClusterNodeResponse(ctx context.Context, redisClient *redis.Client) ([]c
 		response = append(response, record)
 	}
 	return response, nil
+}
+
+func nodeFailedOrDisconnected(node clusterNodesResponse) bool {
+	return strings.Contains(node[2], "fail") || strings.Contains(node[7], "disconnected")
+}
+
+func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, cr.Name+"-leader-0")
+	defer redisClient.Close()
+	clusterNodes, err := GetClusterNodeResponse(ctx, redisClient)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, node := range clusterNodes {
+		if nodeFailedOrDisconnected(node) {
+			count++
+		}
+	}
+	log.FromContext(ctx).V(1).Info("Number of failed nodes in cluster", "Failed Node Count", count)
+	return int32(count), nil
 }

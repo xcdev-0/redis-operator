@@ -10,10 +10,10 @@ import (
 // leader용 sts, service 생성
 // follower용 sts, service 생성
 
-func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func CreateRedisLeaderSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
 	// Leader StatefulSet 파라미터 설정
-	prop := RedisClusterRoleParams{
-		RedisClusterRole:              "leader",                                          // StatefulSet 타입
+	roleParams := RedisClusterRoleParams{
+		Role:                          "leader",                                          // StatefulSet 타입
 		Resources:                     cr.Spec.GetRedisLeaderResources(),                 // Leader 리소스 요구사항
 		ReplicaCounts:                 cr.Spec.GetLeaderReplicaCount(),                   // Leader 레플리카 수
 		ContainerSecurityContext:      cr.Spec.RedisLeader.ContainerSecurityContext,      // Leader 보안 컨텍스트
@@ -27,15 +27,15 @@ func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernete
 	}
 	// Leader 추가 Redis 설정 (외부 ConfigMap)
 	if externalConfig := cr.Spec.GetExternalConfig("leader"); externalConfig != nil {
-		prop.ExternalConfig = externalConfig
+		roleParams.ExternalConfig = externalConfig
 	}
-	return prop.CreateRedisClusterSetup(ctx, cr, cl)
+	return roleParams.CreateRedisClusterSetup(ctx, cr, cl)
 }
 
-func CreateRedisFollower(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func CreateRedisFollowerSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
 	// Follower StatefulSet 파라미터 설정
-	prop := RedisClusterRoleParams{
-		RedisClusterRole:              "follower",                                          // StatefulSet 타입
+	roleParams := RedisClusterRoleParams{
+		Role:                          "follower",                                          // StatefulSet 타입
 		Resources:                     cr.Spec.GetRedisFollowerResources(),                 // Follower 리소스 요구사항
 		ReplicaCounts:                 cr.Spec.GetFollowerReplicaCount(),                   // Follower 레플리카 수
 		ContainerSecurityContext:      cr.Spec.RedisFollower.ContainerSecurityContext,      // Follower 보안 컨텍스트
@@ -49,9 +49,9 @@ func CreateRedisFollower(ctx context.Context, cr *rcvb2.RedisCluster, cl kuberne
 	}
 	// Follower 추가 Redis 설정 (외부 ConfigMap)
 	if externalConfig := cr.Spec.GetExternalConfig("follower"); externalConfig != nil {
-		prop.ExternalConfig = externalConfig
+		roleParams.ExternalConfig = externalConfig
 	}
-	return prop.CreateRedisClusterSetup(ctx, cr, cl)
+	return roleParams.CreateRedisClusterSetup(ctx, cr, cl)
 }
 
 func CreateRedisLeaderService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
