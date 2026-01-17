@@ -12,8 +12,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type clusterNodesResponse []string
-
 // ClusterInfoSnapshot is a small parsed view of INFO cluster.
 type ClusterInfoSnapshot struct {
 	State         string

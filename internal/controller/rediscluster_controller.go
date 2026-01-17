@@ -36,7 +36,6 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	redisclusterv1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/cluster"
-	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	corev1 "k8s.io/api/core/v1"
@@ -102,7 +101,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 		// 실제 Redis 클러스터에 있는 Leader 노드 수를 확인합니다.
 		// StatefulSet의 리플리카 수와 실제 클러스터의 노드 수가 일치해야 다운스케일을 진행합니다.
-		if clusterLeaderNodeCount := cluster.CheckRedisNodeCount(ctx, r.K8sClient, cr, "leader"); clusterLeaderNodeCount == currentLeaderReplicas {
+		if clusterLeaderNodeCount := cluster.GetClusterLeaderNodeCount(ctx, r.K8sClient, cr); clusterLeaderNodeCount == currentLeaderReplicas {
 			// Kubernetes Event를 기록하여 다운스케일 시작을 알립니다.
 			r.Recorder.Event(cr, corev1.EventTypeNormal, rcvb2.EventReasonRedisClusterDownscale, "Redis cluster is downscaling...")
 			logger.Info("Redis cluster is downscaling...", "Current.LeaderReplicas", currentLeaderReplicas, "Desired.LeaderReplicas", desiredLeaderReplicas)
@@ -117,11 +116,17 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// 중요: Kubernetes의 "leader" StatefulSet에 속한 Pod라도, 실제 Redis Cluster에서는
 				// 자동 failover, Pod 재시작, 네트워크 분할 등으로 인해 replica(slave) 역할을 하고 있을 수 있습니다.
 				// 슬롯을 이동하려면 해당 노드가 master 역할을 해야 하므로, 실제 역할을 확인합니다.
-				if !(cluster.IsRedisLeader(ctx, r.K8sClient, cr, ordinal)) {
+				podName := cluster.GetPodName(cr.Name, "leader", int(ordinal))
+				isLeader, err := cluster.IsLeaderNode(ctx, r.K8sClient, cr, podName)
+				if err != nil {
+					logger.Error(err, "failed to check if pod is leader")
+					return intctrlutil.RequeueE(ctx, err, "")
+				}
+				if !isLeader {
 					// 실제 Redis에서 이 Pod가 replica 역할을 하고 있으므로, cluster failover를 수행하여
 					// 해당 Pod를 master로 승격시킵니다. 이렇게 해야 해당 샤드의 슬롯을 다른 노드로 이동시킬 수 있습니다.
 					logger.Info("Cluster Failover is initiated", "Shard.Index", ordinal, "Reason", "Pod is replica, promoting to master for slot migration")
-					if err = cluster.ClusterFailover(ctx, r.K8sClient, cr, ordinal); err != nil {
+					if err = cluster.ClusterFailover(ctx, r.K8sClient, cr, podName); err != nil {
 						logger.Error(err, "Failed to initiate cluster failover")
 						return intctrlutil.RequeueE(ctx, err, "")
 					}
@@ -175,7 +180,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	err = cluster.CreateRedisLeader(ctx, cr, r.K8sClient)
+	err = cluster.CreateRedisLeaderSTS(ctx, cr, r.K8sClient)
 	if err != nil {
 		return intctrlutil.RequeueE(ctx, err, "failed to create redis leader")
 	}
@@ -210,7 +215,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			}
 		}
 
-		err = cluster.CreateRedisFollower(ctx, cr, r.K8sClient)
+		err = cluster.CreateRedisFollowerSTS(ctx, cr, r.K8sClient)
 		if err != nil {
 			return intctrlutil.RequeueE(ctx, err, "")
 		}
@@ -253,94 +258,152 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// ================================================
-	// 4. 단일 노드
+	// 4. 단일 노드일 때 leader-0 노드에 모든 슬롯 할당
 	// ================================================
+	// 아직 클러스터 안에 포함되지는 않음
 	if desiredLeaderReplicas == 1 {
-		// 슬롯이 할당되었는지 확인합니다.
-		// 슬롯이 할당되지 않았으면 클러스터 초기화 명령을 실행합니다.
 		if slotsAssigned, err := cluster.CheckClusterAllSlotsAssigned(ctx, r.K8sClient, cr); err != nil {
 			return intctrlutil.RequeueE(ctx, err, "failed to get cluster slots")
 		} else {
 			if !slotsAssigned {
+				// cluster reset + cluster addslots 실행
 				logger.Info("Start creating a single-node redis cluster")
-				// 단일 노드 클러스터를 초기화합니다.
-				// 이 명령은 모든 슬롯을 단일 노드에 할당합니다.
-				cluster.ExecuteRedisClusterCommand(ctx, r.K8sClient, cr)
+				cluster.AddAllSlotsToSingleNode(ctx, r.K8sClient, cr)
 			}
 		}
 	}
 
 	// ================================================
-	// 5. 다중 노드 클러스터 초기화
+	// 5. 클러스터 초기화
 	// ================================================
-	if desiredLeaderReplicas > 1 {
-		if nc := cluster.CheckRedisNodeCount(ctx, r.K8sClient, cr, ""); nc != desiredTotalReplicas {
-			logger.Info("Creating redis cluster by executing cluster creation commands")
-			clusterLeaderNodeCnt := cluster.CheckRedisNodeCount(ctx, r.K8sClient, cr, "leader")
-
-			// Leader 노드가 클러스터에 모두 포함되지 않은 경우
-			if clusterLeaderNodeCnt != desiredLeaderReplicas {
-				logger.Info("Not all leader are part of the cluster...", "Leaders.Count", clusterLeaderNodeCnt, "Instance.Size", desiredLeaderReplicas)
-
-				// 클러스터가 이미 초기화되었는지 확인
-				alreadyBootstrapped, snap, nodeLines, err := cluster.CheckIfClusterAlreadyBootstrappedFromK8s(ctx, r.K8sClient, cr)
-				if err != nil {
-					logger.Error(err, "Failed to check if cluster is already bootstrapped, assuming it is to avoid re-initialization")
-					alreadyBootstrapped = true // 에러 시 보수적으로 이미 초기화된 것으로 간주
+	if nc := cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, ""); nc != desiredTotalReplicas {
+		logger.Info("Creating redis cluster by executing cluster creation commands")
+		// 실제로 레디스 클러스터내에서 마스터 역할을 하는 개수
+		currentLeaderCount := cluster.GetClusterLeaderNodeCount(ctx, r.K8sClient, cr)
+		if currentLeaderCount != desiredLeaderReplicas {
+			logger.Info("Not all leader are part of the cluster...", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas)
+			if currentLeaderCount <= 2 {
+				cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
+			} else {
+				if currentLeaderCount < desiredLeaderReplicas {
+					// Scale up the cluster
+					// Step 2 : Add Redis Node
+					cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr)
+					// Step 3 Rebalance the cluster using the empty masters
+					cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr)
 				}
-
-				if !alreadyBootstrapped {
-					// 클러스터가 아직 초기화되지 않았을 때만 --cluster create 실행
-					if snap != nil {
-						logger.Info("Cluster is not bootstrapped yet, executing cluster creation", 
-							"cluster_state", snap.State,
-							"known_nodes", snap.KnownNodes,
-							"slots_assigned", snap.SlotsAssigned,
-							"cluster_nodes_lines", nodeLines)
-					} else {
-						logger.Info("Cluster is not bootstrapped yet, executing cluster creation")
-					}
-					cluster.ExecuteRedisClusterCommand(ctx, r.K8sClient, cr)
-				} else {
-					// Leader가 3개 이상이지만 desired 개수보다 적은 경우: 스케일 아웃
-					if clusterLeaderNodeCnt < desiredLeaderReplicas {
-						// Step 1: 새 Leader 노드를 클러스터에 추가합니다.
-						// 새로 생성된 Pod는 아직 클러스터에 포함되지 않은 "empty master" 상태입니다.
-						cluster.AddRedisNodeToCluster(ctx, r.K8sClient, cr)
-						// monitoring.RedisClusterAddingNodeAttempt.WithLabelValues(instance.Namespace, instance.Name).Inc()
-
-						// Step 2: Empty master 노드를 사용하여 클러스터를 재밸런싱합니다.
-						// 새로 추가된 노드에 슬롯을 분배하여 부하를 분산시킵니다.
-						cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr)
-					}
 			}
 		} else {
-			// 모든 Leader가 클러스터에 포함된 경우: Follower 추가
 			if desiredFollwerReplicas > 0 {
-				logger.Info("All leader are part of the cluster, adding follower/replicas", "Leaders.Count", clusterLeaderNodeCnt, "Instance.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
-				// Follower 노드를 각 Leader에 복제본으로 연결합니다.
-				// 이 명령은 Follower를 Leader에 연결하고 데이터 복제를 시작합니다.
+				logger.Info("All leader are part of the cluster, adding follower/replicas", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
 				cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr)
 			} else {
-				logger.Info("no follower/replicas configured, skipping replication configuration", "Leaders.Count", clusterLeaderNodeCnt, "Leader.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
+				logger.Info("no follower/replicas configured, skipping replication configuration", "Leaders.Count", currentLeaderCount, "Leader.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
 			}
 		}
+		return intctrlutil.RequeueAfter(ctx, time.Second*60, "Redis cluster count is not desired", "Current.Count", nc, "Desired.Count", desiredTotalReplicas)
+	}
 
-		// ================================================
-		// 6. 클러스터 상태 확인
-		// ================================================
-		logger.Info("Number of Redis nodes match desired")
-		unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+	// ================================================
+	// 6. 클러스터 상태 확인
+	// ================================================
+	logger.Info("Number of Redis nodes match desired")
+	unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+	if err != nil {
+		logger.Error(err, "failed to determine unhealthy node count in cluster")
+	}
+
+	// 비정상 노드가 발견된 경우 (단일 노드 클러스터는 제외)
+	if int(desiredTotalReplicas) > 1 && unhealthyNodeCount > 0 {
+		// 상태를 Failed로 설정하여 문제가 있음을 표시합니다.
+		requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
+			State:                 rcvb2.RedisClusterFailed,
+			Reason:                "RedisCluster has unhealthy nodes",
+			ReadyLeaderReplicas:   desiredLeaderReplicas,
+			ReadyFollowerReplicas: desiredFollwerReplicas,
+		})
 		if err != nil {
-			logger.Error(err, "failed to determine unhealthy node count in cluster")
+			return intctrlutil.RequeueE(ctx, err, "")
+		}
+		if requeue {
+			return intctrlutil.Requeue()
 		}
 
-		// 비정상 노드가 발견된 경우 (단일 노드 클러스터는 제외)
-		if int(desiredTotalReplicas) > 1 && unhealthyNodeCount > 0 {
-			// 상태를 Failed로 설정하여 문제가 있음을 표시합니다.
+		// 연결이 끊긴 Master 노드를 복구 시도합니다.
+		// 네트워크 문제나 일시적인 장애로 인해 노드가 클러스터에서 분리되었을 수 있습니다.
+		logger.Info("healthy leader count does not match desired; attempting to repair disconnected masters")
+		if err = cluster.RepairDisconnectedMasters(ctx, r.K8sClient, cr); err != nil {
+			logger.Error(err, "failed to repair disconnected masters")
+		}
+
+		// 복구 작업 후 비정상 노드 수를 다시 확인합니다.
+		// 최대 3회 시도하며, 각 시도 사이에 5초 대기합니다.
+		err = retry.Do(func() error {
+			nc, nErr := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+			if nErr != nil {
+				return nErr
+			}
+			if nc == 0 {
+				return nil // 성공: 비정상 노드가 없음
+			}
+			return fmt.Errorf("%d unhealthy nodes", nc) // 실패: 아직 비정상 노드가 있음
+		}, retry.Attempts(3), retry.Delay(time.Second*5))
+
+		// 복구가 성공한 경우
+		if err == nil {
+			logger.Info("repairing unhealthy masters successful, no unhealthy masters left")
+			// 30초 후에 다시 확인합니다. 이 시간 동안 클러스터가 안정화됩니다.
+			return intctrlutil.RequeueAfter(ctx, time.Second*30, "no unhealthy nodes found after repairing disconnected masters")
+		}
+
+		// 복구가 실패한 경우, 비정상 노드 수를 다시 확인합니다.
+		unhealthyNodeCount, err = cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+		if err != nil {
+			return intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
+		}
+
+		// 대부분의 노드가 비정상인 경우 (전체 - 1개 이상)
+		// 클러스터가 심각하게 손상되었으므로 수동 개입이 필요합니다.
+		// "거의 모든 노드가 실패"한 경우를 감지하기 위해서입니다.
+		// 3개 중 2개 실패: 자동 복구가 거의 불가능
+		// 5개 중 4개 실패: 자동 복구가 거의 불가능
+		if int(desiredTotalReplicas) > 1 && int(unhealthyNodeCount) >= int(desiredTotalReplicas)-1 {
+			return intctrlutil.RequeueE(ctx, fmt.Errorf("cluster broken: %d/%d nodes unhealthy, manual intervention required", unhealthyNodeCount, desiredTotalReplicas), "")
+		}
+	}
+
+	// ========================================================================
+	// Step 14: Empty Master 노드 확인
+	// ========================================================================
+	// 모든 노드가 클러스터에 포함되었는지 확인한 후, 슬롯이 할당되지 않은 Empty Master 노드가 있는지 확인합니다.
+	// Empty Master는 클러스터에 포함되어 있지만 슬롯이 없는 노드입니다 (스케일 아웃 후 발생할 수 있음).
+	if cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, "") == desiredTotalReplicas {
+		// Empty Master가 발견되면 자동으로 재밸런싱하여 슬롯을 분배합니다.
+		cluster.CheckIfEmptyMasters(ctx, r.K8sClient, cr)
+	}
+
+	// ========================================================================
+	// Step 15: 클러스터 Ready 상태 설정
+	// ========================================================================
+	// 모든 Leader와 Follower가 준비되었고, 아직 Ready 상태가 아니면 Ready로 전환합니다.
+	// 이미 Ready 상태인 경우 불필요한 상태 업데이트를 방지하기 위해 건너뜁니다.
+	if cr.Status.ReadyLeaderReplicas == desiredLeaderReplicas && cr.Status.ReadyFollowerReplicas == desiredFollwerReplicas && cr.Status.State != rcvb2.RedisClusterReady {
+		// 먼저 클러스터가 비정상 상태라고 가정하고 메트릭을 0으로 설정합니다.
+
+		// 클러스터 상태를 확인합니다 (redis-cli --cluster check 명령 사용).
+		if cluster.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
+
+			// 동적 설정을 모든 Redis 인스턴스에 적용합니다.
+			// 동적 설정은 CONFIG SET 명령으로 런타임에 변경 가능한 설정입니다.
+			if err = cluster.SetRedisClusterDynamicConfig(ctx, r.K8sClient, cr); err != nil {
+				logger.Error(err, "Failed to set dynamic config")
+				return intctrlutil.RequeueE(ctx, err, "failed to set dynamic config")
+			}
+
+			// 상태를 Ready로 업데이트합니다.
 			requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
-				State:                 rcvb2.RedisClusterFailed,
-				Reason:                "RedisCluster has unhealthy nodes",
+				State:                 rcvb2.RedisClusterReady,
+				Reason:                rcvb2.ReadyClusterReason,
 				ReadyLeaderReplicas:   desiredLeaderReplicas,
 				ReadyFollowerReplicas: desiredFollwerReplicas,
 			})
@@ -350,113 +413,19 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			if requeue {
 				return intctrlutil.Requeue()
 			}
-
-			// 연결이 끊긴 Master 노드를 복구 시도합니다.
-			// 네트워크 문제나 일시적인 장애로 인해 노드가 클러스터에서 분리되었을 수 있습니다.
-			logger.Info("healthy leader count does not match desired; attempting to repair disconnected masters")
-			if err = cluster.RepairDisconnectedMasters(ctx, r.K8sClient, cr); err != nil {
-				logger.Error(err, "failed to repair disconnected masters")
-			}
-
-			// 복구 작업 후 비정상 노드 수를 다시 확인합니다.
-			// 최대 3회 시도하며, 각 시도 사이에 5초 대기합니다.
-			err = retry.Do(func() error {
-				nc, nErr := k8sutils.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
-				if nErr != nil {
-					return nErr
-				}
-				if nc == 0 {
-					return nil // 성공: 비정상 노드가 없음
-				}
-				return fmt.Errorf("%d unhealthy nodes", nc) // 실패: 아직 비정상 노드가 있음
-			}, retry.Attempts(3), retry.Delay(time.Second*5))
-
-			// 복구가 성공한 경우
-			if err == nil {
-				logger.Info("repairing unhealthy masters successful, no unhealthy masters left")
-				// 30초 후에 다시 확인합니다. 이 시간 동안 클러스터가 안정화됩니다.
-				return intctrlutil.RequeueAfter(ctx, time.Second*30, "no unhealthy nodes found after repairing disconnected masters")
-			}
-
-			// 복구가 실패한 경우, 비정상 노드 수를 다시 확인합니다.
-			unhealthyNodeCount, err = cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
-			}
-
-			// 대부분의 노드가 비정상인 경우 (전체 - 1개 이상)
-			// 클러스터가 심각하게 손상되었으므로 수동 개입이 필요합니다.
-			if int(desiredTotalReplicas) > 1 && int(unhealthyNodeCount) >= int(desiredTotalReplicas)-1 {
-				return intctrlutil.RequeueE(ctx, fmt.Errorf("cluster broken: %d/%d nodes unhealthy, manual intervention required", unhealthyNodeCount, desiredTotalReplicas), "")
-			}
 		}
-
-		// ========================================================================
-		// Step 14: Empty Master 노드 확인
-		// ========================================================================
-		// 모든 노드가 클러스터에 포함되었는지 확인한 후, 슬롯이 할당되지 않은 Empty Master 노드가 있는지 확인합니다.
-		// Empty Master는 클러스터에 포함되어 있지만 슬롯이 없는 노드입니다 (스케일 아웃 후 발생할 수 있음).
-		if cluster.CheckRedisNodeCount(ctx, r.K8sClient, cr, "") == desiredTotalReplicas {
-			// Empty Master가 발견되면 자동으로 재밸런싱하여 슬롯을 분배합니다.
-			cluster.CheckIfEmptyMasters(ctx, r.K8sClient, cr)
-		}
-
-		// ========================================================================
-		// Step 15: 클러스터 Ready 상태 설정
-		// ========================================================================
-		// 모든 Leader와 Follower가 준비되었고, 아직 Ready 상태가 아니면 Ready로 전환합니다.
-		// 이미 Ready 상태인 경우 불필요한 상태 업데이트를 방지하기 위해 건너뜁니다.
-		if cr.Status.ReadyLeaderReplicas == desiredLeaderReplicas && cr.Status.ReadyFollowerReplicas == desiredFollwerReplicas && cr.Status.State != rcvb2.RedisClusterReady {
-			// 먼저 클러스터가 비정상 상태라고 가정하고 메트릭을 0으로 설정합니다.
-
-			// 클러스터 상태를 확인합니다 (redis-cli --cluster check 명령 사용).
-			if cluster.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
-
-				// 동적 설정을 모든 Redis 인스턴스에 적용합니다.
-				// 동적 설정은 CONFIG SET 명령으로 런타임에 변경 가능한 설정입니다.
-				if err = cluster.SetRedisClusterDynamicConfig(ctx, r.K8sClient, cr); err != nil {
-					logger.Error(err, "Failed to set dynamic config")
-					return intctrlutil.RequeueE(ctx, err, "failed to set dynamic config")
-				}
-
-				// 상태를 Ready로 업데이트합니다.
-				requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
-					State:                 rcvb2.RedisClusterReady,
-					Reason:                rcvb2.ReadyClusterReason,
-					ReadyLeaderReplicas:   desiredLeaderReplicas,
-					ReadyFollowerReplicas: desiredFollwerReplicas,
-				})
-				if err != nil {
-					return intctrlutil.RequeueE(ctx, err, "")
-				}
-				if requeue {
-					return intctrlutil.Requeue()
-				}
-			}
-		}
-
-		// ========================================================================
-		// Step 16: Pod 라벨 동기화
-		// ========================================================================
-		// Pod의 실제 역할(leader/follower)을 Kubernetes 라벨로 동기화합니다.
-		// 이렇게 하면 Service Selector가 올바르게 작동하여 각 역할의 Pod를 정확히 선택할 수 있습니다.
-		for _, fakeRole := range []string{"leader", "follower"} {
-			labels := k8smeta.GetRedisLabels(&k8smeta.RedisLabels{
-				Name:      cr.GetName() + "-" + fakeRole,
-				SetupType: constants.SetupTypeCluster,
-				Role:      fakeRole,
-				Labels:    cr.GetLabels()})
-			if err = cluster.UpdateRedisRoleLabel(ctx, cr.GetNamespace(), labels, cr.Spec.KubernetesConfig.ExistingPasswordSecret, cr.Spec.TLS); err != nil {
-				return intctrlutil.RequeueE(ctx, err, "")
-			}
-		}
-
-		// 클러스터 초기화 작업이 진행 중이므로 60초 후에 다시 reconcile합니다.
-		// 이 시간 동안 노드가 클러스터에 추가되고 안정화됩니다.
-		return intctrlutil.RequeueAfter(ctx, time.Second*60, "Redis cluster count is not desired", "Current.Count", nc, "Desired.Count", desiredTotalReplicas)
 	}
 
-	return ctrl.Result{}, nil
+	// ========================================================================
+	// Step 16: Pod 라벨 동기화
+	// ========================================================================
+	// Pod의 실제 역할(leader/follower)을 Kubernetes 라벨로 동기화합니다.
+	// 이렇게 하면 Service Selector가 올바르게 작동하여 각 역할의 Pod를 정확히 선택할 수 있습니다.
+	cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr)
+
+	// 클러스터 초기화 작업이 진행 중이므로 60초 후에 다시 reconcile합니다.
+	// 이 시간 동안 노드가 클러스터에 추가되고 안정화됩니다.
+	return intctrlutil.RequeueAfter(ctx, time.Second*60, "Redis cluster count is not desired", "Current.Count", nc, "Desired.Count", desiredTotalReplicas)
 }
 
 func (r *RedisClusterReconciler) updateStatus(ctx context.Context, rc *rcvb2.RedisCluster, status rcvb2.RedisClusterStatus) (requeue bool, err error) {

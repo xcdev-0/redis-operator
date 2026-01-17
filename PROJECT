@@ -7,7 +7,7 @@ domain: redis.ejlabs.in
 layout:
 - go.kubebuilder.io/v4
 projectName: redis
-repo: github.com/xc/redis-operator
+repo: github.com/xcdev-0/redis-operator
 resources:
 - api:
     crdVersion: v1
@@ -16,6 +16,6 @@ resources:
   domain: redis.ejlabs.in
   group: rediscluster
   kind: RedisCluster
-  path: github.com/xc/redis-operator/api/v1beta2
+  path: github.com/xcdev-0/redis-operator/api/v1beta2
   version: v1beta2
 version: "3"

@@ -1,7 +1,7 @@
-# This rule is not used by the project redis itself.
+# This rule is not used by the project redisutils itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants full permissions ('*') over rediscluster.redis.ejlabs.in.
+# Grants full permissions ('*') over cluster.redisutils.ejlabs.in.
 # This role is intended for users authorized to modify roles and bindings within the cluster,
 # enabling them to delegate specific permissions to other users or groups as needed.
 
@@ -14,13 +14,13 @@ metadata:
   name: rediscluster-admin-role
 rules:
 - apiGroups:
-  - rediscluster.redis.ejlabs.in
+  - cluster.redisutils.ejlabs.in
   resources:
   - redisclusters
   verbs:
   - '*'
 - apiGroups:
-  - rediscluster.redis.ejlabs.in
+  - cluster.redisutils.ejlabs.in
   resources:
   - redisclusters/status
   verbs:

@@ -1,4 +1,4 @@
-apiVersion: rediscluster.redis.ejlabs.in/v1beta2
+apiVersion: cluster.redisutils.ejlabs.in/v1beta2
 kind: RedisCluster
 metadata:
   labels:

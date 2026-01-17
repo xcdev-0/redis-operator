@@ -55,14 +55,20 @@ type RedisClusterSpec struct {
 	PriorityClassName  string                     `json:"priorityClassName,omitempty"`
 
 	// ===== 컨테이너 설정 =====
-	InitContainer *InitContainer `json:"initContainer,omitempty"`
-	Sidecars      *[]Sidecar     `json:"sidecars,omitempty"`
+	Sidecars *[]Sidecar `json:"sidecars,omitempty"`
 
 	// ===== 모니터링 설정 =====
 	RedisExporter *RedisExporter `json:"redisExporter,omitempty"`
 
 	// ===== 환경 변수 설정 =====
 	EnvVars *[]corev1.EnvVar `json:"env,omitempty"`
+}
+
+func (cr *RedisClusterSpec) IsPersistenceEnabled() bool {
+	if cr.PersistenceEnabled != nil {
+		return *cr.PersistenceEnabled
+	}
+	return true
 }
 
 func (cr *RedisClusterSpec) GetRedisLeaderResources() *corev1.ResourceRequirements {
@@ -107,16 +113,44 @@ func (cr *RedisClusterSpec) GetExternalConfig(role string) *string {
 	return nil
 }
 
-// RedisClusterStatus defines the observed state of RedisCluster.
+type RedisClusterState string
+
+const (
+	RedisClusterInitializing RedisClusterState = "Initializing"
+	RedisClusterBootstrap    RedisClusterState = "Bootstrap"
+	RedisClusterReady        RedisClusterState = "Ready"
+	RedisClusterFailed       RedisClusterState = "Failed"
+)
+const (
+	InitializingClusterLeaderReason   string = "RedisCluster is initializing leaders"
+	InitializingClusterFollowerReason string = "RedisCluster is initializing followers"
+	BootstrapClusterReason            string = "RedisCluster is bootstrapping"
+	ReadyClusterReason                string = "RedisCluster is ready"
+)
+const (
+	EventReasonRedisClusterDownscale = "RedisClusterDownscale"
+)
+
+// +kubebuilder:subresource:status
 type RedisClusterStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	State  RedisClusterState `json:"state,omitempty"`
+	Reason string            `json:"reason,omitempty"`
+	// +kubebuilder:default=0
+	ReadyLeaderReplicas int32 `json:"readyLeaderReplicas,omitempty"`
+	// +kubebuilder:default=0
+	ReadyFollowerReplicas int32 `json:"readyFollowerReplicas,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
+// +kubebuilder:printcolumn:name="ClusterSize",type=integer,JSONPath=`.spec.clusterSize`,description=Current cluster node count
+// +kubebuilder:printcolumn:name="ReadyLeaderReplicas",type="integer",JSONPath=".status.readyLeaderReplicas",description="Number of ready leader replicas"
+// +kubebuilder:printcolumn:name="ReadyFollowerReplicas",type="integer",JSONPath=".status.readyFollowerReplicas",description="Number of ready follower replicas"
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.state",description="The current state of the Redis Cluster",priority=1
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Age of Cluster",priority=1
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.reason",description="The reason for the current state",priority=1
 
-// RedisCluster is the Schema for the redisclusters API
 type RedisCluster struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -133,14 +167,25 @@ type RedisCluster struct {
 	Status RedisClusterStatus `json:"status,omitempty,omitzero"`
 }
 
-func (cr *RedisClusterSpec) GetReplicaCounts(t string) int32 {
-	count := cr.ClusterSize
-	if t == "leader" && cr.RedisLeader.ReplicaCount != nil {
-		count = cr.RedisLeader.ReplicaCount
-	} else if t == "follower" && cr.RedisFollower.ReplicaCount != nil {
-		count = cr.RedisFollower.ReplicaCount
+func (cr *RedisClusterSpec) GetLeaderReplicaCount() int32 {
+	if cr.RedisLeader.ReplicaCount != nil {
+		return *cr.RedisLeader.ReplicaCount
 	}
-	return *count
+	return *cr.ClusterSize
+}
+
+func (cr *RedisClusterSpec) GetFollowerReplicaCount() int32 {
+	if cr.RedisFollower.ReplicaCount != nil {
+		return *cr.RedisFollower.ReplicaCount
+	}
+	return *cr.ClusterSize
+}
+
+func (cr *RedisCluster) GetClientPort() int {
+	if cr.Spec.ClientPort != nil {
+		return *cr.Spec.ClientPort
+	}
+	return 6379
 }
 
 // +kubebuilder:object:root=true

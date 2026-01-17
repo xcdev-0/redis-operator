@@ -1,7 +1,7 @@
-# This rule is not used by the project redis itself.
+# This rule is not used by the project redisutils itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to rediscluster.redis.ejlabs.in resources.
+# Grants read-only access to cluster.redisutils.ejlabs.in resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -14,7 +14,7 @@ metadata:
   name: rediscluster-viewer-role
 rules:
 - apiGroups:
-  - rediscluster.redis.ejlabs.in
+  - cluster.redisutils.ejlabs.in
   resources:
   - redisclusters
   verbs:
@@ -22,7 +22,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - rediscluster.redis.ejlabs.in
+  - cluster.redisutils.ejlabs.in
   resources:
   - redisclusters/status
   verbs:

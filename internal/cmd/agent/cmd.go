@@ -9,7 +9,7 @@ import (
 func CMD() *cobra.Command {
 	agentCmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Agent is a tool which run as a init/sidecar container along with redis",
+		Short: "Agent is a tool which run as a init/sidecar container along with redisutils",
 	}
 	agentCmd.AddCommand(bootstrap.CMD())
 	return agentCmd

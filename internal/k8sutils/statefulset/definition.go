@@ -14,30 +14,21 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-type InitContainerConfig struct {
-	Role                    string
-	Name                    string
-	InitContainerParameters InitContainerParameters
-	AdditionalVolumeMounts  []corev1.VolumeMount
-	ExternalConfig          *string
-	ContainerParameters     ContainerParameters
-	ClusterVersion          *string
-}
-
 func generateStatefulSetDef(
 	objectMeta metav1.ObjectMeta,
 	stsParams StatefulSetParameters,
 	ownerDef metav1.OwnerReference,
-	initcontainerParams InitContainerParameters,
 	containerParams ContainerParameters,
 ) *appsv1.StatefulSet {
+
+	selectorLabels := &metav1.LabelSelector{
+		MatchLabels: k8smeta.GetRedisClusterStableLabels(objectMeta.GetLabels())}
 
 	statefulset := &appsv1.StatefulSet{
 		TypeMeta:   k8smeta.GenerateTypeMeta("StatefulSet", "apps/v1"),
 		ObjectMeta: objectMeta,
 		Spec: appsv1.StatefulSetSpec{
-			Selector: k8smeta.LabelSelectors(
-				k8smeta.ExtractStatefulSetSelectorLabels(objectMeta.GetLabels())),
+			Selector:                             selectorLabels,
 			ServiceName:                          fmt.Sprintf("%s-headless", objectMeta.Name),
 			Replicas:                             stsParams.Replicas,
 			UpdateStrategy:                       stsParams.UpdateStrategy,
@@ -50,15 +41,14 @@ func generateStatefulSetDef(
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
-					Containers: generateMainContainerDef(ContainerConfig{
-						Name:                   objectMeta.GetName(),
-						EnableMetrics:          stsParams.EnableMetrics,
-						ContainerParams:        containerParams,
-						ClusterModeEnabled:     stsParams.ClusterModeEnabled,
-						NodeConfVolumeEnabled:  stsParams.NodeConfVolumeEnabled,
-						ExternalConfig:         stsParams.ExternalConfig,
-						ClusterVersion:         stsParams.ClusterVersion,
-						AdditionalVolumeMounts: containerParams.AdditionalMountPath,
+					Containers: generateMainContainerDef(ContainerConfigParams{
+						Name:                  objectMeta.GetName(),
+						EnableMetrics:         stsParams.EnableMetrics,
+						ContainerParams:       containerParams,
+						ClusterModeEnabled:    stsParams.ClusterModeEnabled,
+						NodeConfVolumeEnabled: stsParams.NodeConfVolumeEnabled,
+						ExternalConfig:        stsParams.ExternalConfig,
+						ClusterVersion:        stsParams.ClusterVersion,
 					}),
 
 					// Init Container에서 생성하는 설정 파일을 저장할 볼륨
@@ -67,13 +57,11 @@ func generateStatefulSetDef(
 
 					// Init Container 설정
 					InitContainers: generateInitContainerDef(InitContainerConfig{
-						Role:                    containerParams.Role,
-						Name:                    objectMeta.GetName(),
-						InitContainerParameters: initcontainerParams,
-						ExternalConfig:          stsParams.ExternalConfig,
-						AdditionalVolumeMounts:  initcontainerParams.AdditionalMountPath,
-						ContainerParameters:     containerParams,
-						ClusterVersion:          stsParams.ClusterVersion,
+						RedisSetupType:      containerParams.RedisSetupType,
+						Name:                objectMeta.GetName(),
+						ExternalConfig:      stsParams.ExternalConfig,
+						ContainerParameters: containerParams,
+						ClusterVersion:      stsParams.ClusterVersion,
 					}),
 				},
 			},
@@ -88,10 +76,8 @@ func generateStatefulSetDef(
 	}
 
 	// 추가 볼륨 추가
-	if len(containerParams.AdditionalVolume) > 0 { // ???
-		statefulset.Spec.Template.Spec.Volumes = append(
-			statefulset.Spec.Template.Spec.Volumes,
-			containerParams.AdditionalVolume...)
+	if len(stsParams.AdditionalVolumes) > 0 {
+		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes, stsParams.AdditionalVolumes...)
 	}
 
 	// TLS 인증서 볼륨 추가
@@ -100,7 +86,7 @@ func generateStatefulSetDef(
 			corev1.Volume{
 				Name: consts.TLSCertsVolumeName,
 				VolumeSource: corev1.VolumeSource{
-					Secret: containerParams.TLSConfig.Secret,
+					Secret: &containerParams.TLSConfig.Secret,
 				},
 			})
 	}
@@ -120,7 +106,7 @@ func generateStatefulSetDef(
 	}
 
 	// 노드 설정 저장용 PVC 템플릿 설정
-	if containerParams.IsPersistenceEnabled() &&
+	if containerParams.PersistenceEnabled &&
 		stsParams.ClusterModeEnabled &&
 		stsParams.NodeConfVolumeEnabled {
 		statefulset.Spec.VolumeClaimTemplates = append(
@@ -132,7 +118,7 @@ func generateStatefulSetDef(
 	}
 
 	// 데이터 저장용 PVC 템플릿 설정
-	if containerParams.IsPersistenceEnabled() {
+	if containerParams.PersistenceEnabled {
 		pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, objectMeta.GetName())
 		statefulset.Spec.VolumeClaimTemplates = append(
 			statefulset.Spec.VolumeClaimTemplates,
@@ -160,16 +146,25 @@ func generateStatefulSetDef(
 	return statefulset
 }
 
-// generateInitContainerDef는 Redis Init Container 정의를 생성합니다.
+type InitContainerConfig struct {
+	RedisSetupType      string
+	Name                string
+	ExternalConfig      *string
+	ContainerParameters ContainerParameters
+	ClusterVersion      *string
+}
+
 // Init Container는 메인 컨테이너가 시작되기 전에 실행되며, Redis 설정 파일 생성 등의 초기화 작업을 수행합니다.
 func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
-	initContainerParams := cfg.InitContainerParameters
 	containerParams := cfg.ContainerParameters
 	clusterVersion := cfg.ClusterVersion
 	externalConfig := cfg.ExternalConfig
 
 	containers := []corev1.Container{}
 
+	// ================================================
+	// 기본 Init Container 설정
+	// ================================================
 	// 환경 변수 구성: 기본 환경 변수 + 추가 환경 변수
 	envVars := append(
 		ptr.Deref(containerParams.EnvVars, []corev1.EnvVar{}),
@@ -190,13 +185,15 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 
 	// 볼륨 마운트 구성: 기본 설정 파일 볼륨
 	volumeMounts := []corev1.VolumeMount{
-		generateConfigVolumeMount(consts.ConfigVolumeName),
+		// name: config, mountPath: /etc/redis (기본 설정 파일 볼륨)
+		generateConfigVolumeMount(),
 	}
 
 	// 외부 ConfigMap이 제공된 경우 추가 볼륨 마운트
 	if externalConfig != nil {
 		volumeMounts = append(volumeMounts,
-			generateExternalConfigVolumeMount(consts.ExternalConfigVolumeName))
+			// name: external-config, mountPath: /etc/redis/external.conf.d
+			generateExternalConfigVolumeMount())
 	}
 
 	// Init Config Container 생성 (Redis 설정 파일 생성용)
@@ -206,9 +203,9 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/operator", "agent"},
 		Args:            []string{"bootstrap"},
-		SecurityContext: initContainerParams.SecurityContext,
-		Env:             getEnvironmentVariables(containerParams.BuildEnvConfig(envVars, clusterVersion)),
-		VolumeMounts:    volumeMounts,
+		// SecurityContext:,
+		Env:          containerParams.GetEnvVars(envVars, clusterVersion),
+		VolumeMounts: volumeMounts,
 	}
 
 	// 리소스 제한이 설정된 경우 적용
@@ -218,62 +215,39 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 
 	containers = append(containers, initConfigContainer)
 
-	// 사용자 정의 Init Container가 활성화된 경우 추가
-	if initContainerParams.Enabled != nil && *initContainerParams.Enabled {
-		userInitContainer := corev1.Container{
-			Name:            "init" + cfg.Name,
-			Image:           initContainerParams.Image,
-			ImagePullPolicy: initContainerParams.ImagePullPolicy,
-			Command:         initContainerParams.Command,
-			Args:            initContainerParams.Arguments,
-			SecurityContext: initContainerParams.SecurityContext,
-			Resources:       ptr.Deref(initContainerParams.Resources, corev1.ResourceRequirements{}),
-			Env:             ptr.Deref(initContainerParams.AdditionalEnvVariable, []corev1.EnvVar{}),
-			VolumeMounts: getVolumeMount(volumeMountParams{
-				Name:                   cfg.Name,
-				AdditionalVolumeMounts: cfg.AdditionalVolumeMounts,
-				Persistence:            initContainerParams.IsPersistenceEnabled(),
-				ClusterModeEnabled:     false,
-				NodeConfVolumeEnabled:  false,
-				ExternalConfig:         nil,
-				TLS:                    nil,
-				ACL:                    nil,
-			}),
-		}
-		containers = append(containers, userInitContainer)
-	}
-
 	return containers
 }
 
-type ContainerConfig struct {
-	Name                   string
-	AdditionalVolumeMounts []corev1.VolumeMount
-	ExternalConfig         *string
-	ClusterModeEnabled     bool
-	NodeConfVolumeEnabled  bool
-	ClusterVersion         *string
-	ContainerParams        ContainerParameters
-	EnableMetrics          bool
+type ContainerConfigParams struct {
+	Name                  string
+	ExternalConfig        *string
+	ClusterModeEnabled    bool
+	NodeConfVolumeEnabled bool
+	ClusterVersion        *string
+	ContainerParams       ContainerParameters
+	EnableMetrics         bool
 }
 
-// generateMainContainerDef는 Redis 메인 컨테이너 정의를 생성합니다.
-// 이 함수는 메인 Redis 컨테이너와 Redis Exporter 사이드카 컨테이너(옵션)를 생성합니다.
-func generateMainContainerDef(cfg ContainerConfig) []corev1.Container {
+func generateMainContainerDef(cfg ContainerConfigParams) []corev1.Container {
 	containerParams := cfg.ContainerParams
+	name := cfg.Name
+	externalConfig := cfg.ExternalConfig
+	clusterModeEnabled := cfg.ClusterModeEnabled
+	nodeConfVolumeEnabled := cfg.NodeConfVolumeEnabled
+	clusterVersion := cfg.ClusterVersion
 
 	// TLS 및 인증 활성화 여부 확인
 	enableTLS := containerParams.IsTLSEnabled()
 	enableAuth := containerParams.IsAuthEnabled()
 
 	// 볼륨 마운트 구성
-	volumeMounts := getVolumeMount(volumeMountParams{
-		Name:                   cfg.Name,
-		AdditionalVolumeMounts: cfg.AdditionalVolumeMounts,
-		ExternalConfig:         cfg.ExternalConfig,
-		Persistence:            containerParams.IsPersistenceEnabled(),
-		ClusterModeEnabled:     cfg.ClusterModeEnabled,
-		NodeConfVolumeEnabled:  cfg.NodeConfVolumeEnabled,
+	volumeMounts := getVolumeMountForMainContainer(volumeMountParams{
+		Name:                   name,
+		AdditionalVolumeMounts: containerParams.AdditionalVolumeMounts,
+		ExternalConfig:         externalConfig,
+		Persistence:            containerParams.PersistenceEnabled,
+		ClusterModeEnabled:     clusterModeEnabled,
+		NodeConfVolumeEnabled:  nodeConfVolumeEnabled,
 		TLS:                    containerParams.TLSConfig,
 		ACL:                    containerParams.ACLConfig,
 	})
@@ -290,13 +264,13 @@ func generateMainContainerDef(cfg ContainerConfig) []corev1.Container {
 
 	// 메인 Redis 컨테이너 생성
 	redisContainer := corev1.Container{
-		Name:            cfg.Name,
+		Name:            name,
 		Image:           containerParams.Image,
 		ImagePullPolicy: containerParams.ImagePullPolicy,
 		SecurityContext: containerParams.SecurityContext,
 		Command:         []string{"redis-server"},
 		Args:            []string{"/etc/redis/redis.conf"},
-		Env:             getEnvironmentVariables(containerParams.BuildEnvConfig(envVars, cfg.ClusterVersion)),
+		Env:             containerParams.GetEnvVars(envVars, clusterVersion),
 		ReadinessProbe:  readinessProbe,
 		LivenessProbe:   livenessProbe,
 		VolumeMounts:    volumeMounts,
@@ -375,20 +349,15 @@ func enableRedisMonitoring(p ContainerParameters) corev1.Container {
 		Env:             getExporterEnvironmentVariables(p),
 		// TLS 인증서 볼륨은 마운트하지만, 데이터 PVC는 마운트하지 않습니다.
 		// Exporter는 Redis에 연결만 하면 되므로 데이터 볼륨이 필요 없습니다.
-		VolumeMounts: getVolumeMount(volumeMountParams{
-			Name:                   "",
-			AdditionalVolumeMounts: p.AdditionalMountPath,
-			Persistence:            false,
-			ClusterModeEnabled:     false,
-			NodeConfVolumeEnabled:  false,
-			ExternalConfig:         nil,
-			TLS:                    p.TLSConfig,
-			ACL:                    p.ACLConfig,
-		}),
+		VolumeMounts: getVolumeMountForExporter(
+			p.TLSConfig,
+			p.ACLConfig,
+			p.AdditionalVolumeMounts,
+		),
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          consts.RedisExporterPortName,
-				ContainerPort: int32(*util.Coalesce(p.RedisExporterPort, ptr.To(common.RedisExporterPort))),
+				ContainerPort: int32(*util.Coalesce(p.RedisExporterPort, ptr.To(consts.RedisExporterPort))),
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},

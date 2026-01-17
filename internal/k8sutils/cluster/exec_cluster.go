@@ -11,37 +11,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func GetClusterInfo(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (*ClusterStatus, error) {
+// Redis 명령어: CLUSTER SLOTS
+func CheckClusterAllSlotsAssigned(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (bool, error) {
 	executionPodName := GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executionPodName)
 	defer redisClient.Close()
 
 	slots, err := redisClient.ClusterSlots(ctx).Result()
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 
-	status := &ClusterStatus{
-		SlotsAssigned: 0,
-	}
-
+	slotsAssigned := 0
 	for _, slot := range slots {
+		log.FromContext(ctx).Info("Checking slot", "Slot", slot)
 		if slot.Start <= slot.End && len(slot.Nodes) > 0 {
-			status.SlotsAssigned += slot.End - slot.Start + 1
+			slotsAssigned += slot.End - slot.Start + 1
 		}
 	}
 
-	return status, nil
+	return slotsAssigned == 16384, nil
 }
 
-func CheckClusterAllSlotsAssigned(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (bool, error) {
-	clusterInfo, err := GetClusterInfo(ctx, k8sClient, cr)
-	if err != nil {
-		return false, err
-	}
-	return clusterInfo.SlotsAssigned == 16384, nil
-}
-
+// redis-cli --cluster reshard
+// --cluster-from <original-node-id>
+// --cluster-to <transfer-node-id>
+// --cluster-slots <slots>
+// --cluster-yes
 func ReshardRedisCluster(
 	ctx context.Context,
 	k8sClient kubernetes.Interface,
@@ -67,7 +63,7 @@ func ReshardRedisCluster(
 
 	originalNodeID := getRedisNodeID(ctx, k8sClient, cr, originalNodeDetails)
 	transferNodeID := getRedisNodeID(ctx, k8sClient, cr, transferNodeDetails)
-	slots, err := getRedisClusterSlots(ctx, redisClient, originalNodeID)
+	slots, err := getClusterSlotByNodeID(ctx, redisClient, originalNodeID)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "failed to get cluster slots")
 		return
@@ -77,10 +73,15 @@ func ReshardRedisCluster(
 		return
 	}
 
+	endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, transferNodeDetails)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for transfer node", "Pod", transferNodeDetails.PodName)
+		return
+	}
 	ri := &RedisInvocation{
 		Command: []string{
 			"redis-cli", "--cluster", "reshard",
-			redisservice.GetEndpoint(ctx, k8sClient, cr, transferNodeDetails)},
+			endpoint},
 	}
 
 	ri.AddAuthAndTLS(ctx, k8sClient, cr)
@@ -98,6 +99,7 @@ func ReshardRedisCluster(
 	}
 }
 
+// redis-cli --cluster del-node <endpoint> <node-id>
 func RemoveRedisNodeFromCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster, originalNodeDetails redisservice.RedisDetails) {
 	executePodName := GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executePodName)
@@ -108,11 +110,15 @@ func RemoveRedisNodeFromCluster(ctx context.Context, k8sClient kubernetes.Interf
 		Namespace: cr.Namespace,
 	}
 
-	// redis-cli --cluster del-node <endpoint> <node-id>
+	endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, executePodDetails)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for execution pod", "Pod", executePodDetails.PodName)
+		return
+	}
 	ri := &RedisInvocation{
 		Command: []string{
 			"redis-cli", "--cluster", "del-node",
-			redisservice.GetEndpoint(ctx, k8sClient, cr, executePodDetails),
+			endpoint,
 			getRedisNodeID(ctx, k8sClient, cr, originalNodeDetails),
 		},
 	}
@@ -125,16 +131,46 @@ func RemoveRedisNodeFromCluster(ctx context.Context, k8sClient kubernetes.Interf
 	log.FromContext(ctx).Info(fmt.Sprintf("removing %s from cluster completed", originalNodeDetails.PodName))
 }
 
+// redis-cli --cluster rebalance <endpoint> --cluster-use-empty-masters
+func RebalanceRedisClusterEmptyMasters(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
+	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodDetails := redisservice.RedisDetails{
+		PodName:   executionPodName,
+		Namespace: cr.Namespace,
+	}
+	endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, executionPodDetails)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for execution pod", "Pod", executionPodDetails.PodName)
+		return
+	}
+	cmd := RedisInvocation{
+		Command: []string{
+			"redis-cli", "--cluster", "rebalance",
+			endpoint,
+			"--cluster-use-empty-masters",
+		},
+	}
+	cmd.AddAuthAndTLS(ctx, k8sClient, cr)
+	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executionPodName)
+	log.FromContext(ctx).Info("rebalancing redis cluster empty masters completed")
+}
+
+// redis-cli --cluster rebalance <endpoint>
 func RebalanceRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
 	executePodName := GetExecutionPodName(cr.Name)
 	executePodDetails := redisservice.RedisDetails{
 		PodName:   executePodName,
 		Namespace: cr.Namespace,
 	}
+	endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, executePodDetails)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for execution pod", "Pod", executePodDetails.PodName)
+		return
+	}
 	ri := &RedisInvocation{
 		Command: []string{
 			"redis-cli", "--cluster", "rebalance",
-			redisservice.GetEndpoint(ctx, k8sClient, cr, executePodDetails),
+			endpoint,
 		},
 	}
 	ri.AddAuthAndTLS(ctx, k8sClient, cr)
@@ -142,8 +178,8 @@ func RebalanceRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, 
 	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd, executePodName)
 }
 
-// executeClusterResetCommand는 지정된 role의 모든 Pod에서 CLUSTER RESET 명령을 실행합니다.
-// 실패 시 FLUSHALL 후 재시도합니다.
+// redis-cli cluster reset
+// redis-cli flushall
 func executeClusterResetCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) error {
 	var replicaCount int32
 	switch nodeType {
@@ -197,7 +233,17 @@ func executeClusterResetCommand(ctx context.Context, client kubernetes.Interface
 
 	return nil
 }
-func createSingleLeaderRedisCommand(ctx context.Context, cr *rcvb2.RedisCluster) RedisInvocation {
+
+// redis-cli cluster reset
+// redis-cli flushall
+// redis-cli cluster addslots 0-16383
+func AddAllSlotsToSingleNode(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
+	executePodName := GetPodName(cr.Name, "leader", 0)
+	err := executeClusterResetCommand(ctx, k8sClient, cr, "leader")
+	if err != nil {
+		log.FromContext(ctx).Error(err, "error executing cluster reset command")
+	}
+
 	cmd := RedisInvocation{
 		Command:      []string{"redis-cli"},
 		RedisCommand: []string{"CLUSTER", "ADDSLOTS"},
@@ -209,10 +255,14 @@ func createSingleLeaderRedisCommand(ctx context.Context, cr *rcvb2.RedisCluster)
 		"BaseCommand", []string{"redis-cli", "CLUSTER", "ADDSLOTS"},
 		"SlotsRange", "0-16383",
 		"TotalSlots", 16384)
+	cmd.AddAuthAndTLS(ctx, k8sClient, cr)
 
-	return cmd
+	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executePodName)
 }
-func CreateMultipleLeaderRedisCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) RedisInvocation {
+
+// redis-cli --cluster create <endpoint>... --cluster-yes
+func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
+	executePodName := GetExecutionPodName(cr.Name)
 	cmd := RedisInvocation{
 		Command: []string{"redis-cli", "--cluster", "create"},
 	}
@@ -222,33 +272,21 @@ func CreateMultipleLeaderRedisCommand(ctx context.Context, client kubernetes.Int
 			PodName:   GetPodName(cr.Name, "leader", podIndex),
 			Namespace: cr.Namespace,
 		}
-		cmd.AddCommand([]string{redisservice.GetEndpoint(ctx, client, cr, rd)})
+		endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, rd)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to get endpoint for leader pod", "Pod", rd.PodName, "Index", podIndex)
+			return
+		}
+		cmd.AddCommand([]string{endpoint})
 	}
 	cmd.AddFlags([]string{"--cluster-yes"})
-	return cmd
-}
-func ExecuteRedisClusterCommand(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	var cmd RedisInvocation
-	executePodName := GetExecutionPodName(cr.Name)
-	replicas := cr.Spec.GetLeaderReplicaCount()
-
-	switch int(replicas) {
-	case 1:
-		err := executeClusterResetCommand(ctx, k8sClient, cr, "leader")
-		if err != nil {
-			log.FromContext(ctx).Error(err, "error executing cluster reset command")
-		}
-		cmd = createSingleLeaderRedisCommand(ctx, cr)
-	default:
-		cmd = CreateMultipleLeaderRedisCommand(ctx, k8sClient, cr)
-	}
 	cmd.AddAuthAndTLS(ctx, k8sClient, cr)
-
 	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executePodName)
 }
 
+// redis-cli --cluster add-node <new-node-endpoint> <existing-node-endpoint>
 func AddRedisLeaderNodeToCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	activeRedisNode := CheckRedisNodeCount(ctx, k8sClient, cr, "leader")
+	activeRedisNode := GetClusterLeaderNodeCount(ctx, k8sClient, cr)
 	newPodDetails := redisservice.RedisDetails{
 		PodName:   GetPodName(cr.Name, "leader", int(activeRedisNode)),
 		Namespace: cr.Namespace,
@@ -258,23 +296,101 @@ func AddRedisLeaderNodeToCluster(ctx context.Context, k8sClient kubernetes.Inter
 		PodName:   executionPodName,
 		Namespace: cr.Namespace,
 	}
+	newEndpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, newPodDetails)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for new pod", "Pod", newPodDetails.PodName)
+		return
+	}
+	execEndpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, executionPodDetails)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for execution pod", "Pod", executionPodDetails.PodName)
+		return
+	}
 	cmd := RedisInvocation{
 		Command: []string{"redis-cli", "--cluster", "add-node",
-			redisservice.GetEndpoint(ctx, k8sClient, cr, newPodDetails),
-			redisservice.GetEndpoint(ctx, k8sClient, cr, executionPodDetails),
+			newEndpoint,
+			execEndpoint,
 		},
 	}
 	cmd.AddAuthAndTLS(ctx, k8sClient, cr)
 	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executionPodName)
 }
 
-func RebalanceRedisClusterEmptyMasters(ctx context.Context, k8sClient kubernetes.Interface, instance *rcvb2.RedisCluster) error {
-	return nil
-}
-func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.Interface, instance *rcvb2.RedisCluster) error {
-	return nil
+func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
+	var followerEndpointIP string
+	followerCounts := cr.Spec.GetFollowerReplicaCount()
+	leaderCounts := cr.Spec.GetLeaderReplicaCount()
+	followerPerLeader := followerCounts / leaderCounts
+
+	executionPodName := GetExecutionPodName(cr.Name)
+
+	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executionPodName)
+	defer redisClient.Close()
+
+	nodes, err := GetClusterNodes(ctx, redisClient)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
+	}
+	for followerIdx := 0; followerIdx <= int(followerCounts)-1; {
+		for i := 0; i < int(followerPerLeader) && followerIdx <= int(followerCounts)-1; i++ {
+			followerPod := redisservice.RedisDetails{
+				PodName:   GetPodName(cr.Name, "follower", followerIdx),
+				Namespace: cr.Namespace,
+			}
+			leaderPod := redisservice.RedisDetails{
+				PodName:   GetPodName(cr.Name, "leader", (followerIdx)%int(leaderCounts)),
+				Namespace: cr.Namespace,
+			}
+			followerEndpointIP, err = redisservice.GetEndPointIP(ctx, k8sClient, cr, followerPod)
+			if err != nil {
+				log.FromContext(ctx).Error(err, "Failed to get endpoint IP for follower pod", "Pod", followerPod.PodName)
+				continue
+			}
+			if !checkRedisNodePresence(ctx, nodes, followerEndpointIP) {
+				log.FromContext(ctx).V(1).Info("Adding node to cluster.", "Node.IP", followerEndpointIP, "Follower.Pod", followerPod)
+
+				followerEndpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, followerPod)
+				if err != nil {
+					log.FromContext(ctx).Error(err, "Failed to get endpoint for follower pod", "Pod", followerPod.PodName)
+					continue
+				}
+				leaderEndpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, leaderPod)
+				if err != nil {
+					log.FromContext(ctx).Error(err, "Failed to get endpoint for leader pod", "Pod", leaderPod.PodName)
+					continue
+				}
+				cmd := &RedisInvocation{
+					Command: []string{"redis-cli", "--cluster", "add-node",
+						followerEndpoint,
+						leaderEndpoint,
+						"--cluster-slave",
+					},
+				}
+				cmd.AddAuthAndTLS(ctx, k8sClient, cr)
+
+				// follower pod 살아있는지 확인
+				followerClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, followerPod.PodName)
+				defer followerClient.Close()
+				pong, err := followerClient.Ping(ctx).Result()
+				if err != nil {
+					log.FromContext(ctx).Error(err, "Failed to ping Redis server", "Follower.Pod", followerPod)
+					continue
+				}
+				if pong == "PONG" { // follower pod 살아있으면 명령 실행
+					redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executionPodName)
+				} else {
+					log.FromContext(ctx).V(1).Info("Skipping execution of command due to failed Redis ping", "Follower.Pod", followerPod)
+				}
+			} else { // 이미 팔로워 노드가 클러스터내에 존재함
+				log.FromContext(ctx).V(1).Info("Skipping Adding node to cluster, already present.", "Follower.Pod", followerPod)
+			}
+
+			followerIdx++
+		}
+	}
 }
 
+// redis-cli --cluster del-node <endpoint> <node-id>
 func RemoveRedisFollowerNodesFromCluster(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2.RedisCluster, podIndex int32) {
 	executePodName := GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sclient, cr, executePodName)
@@ -298,7 +414,11 @@ func RemoveRedisFollowerNodesFromCluster(ctx context.Context, k8sclient kubernet
 
 	// nodeport: host:port
 	// clusterip: ip:port or fqdn:port
-	endpoint := redisservice.GetEndpoint(ctx, k8sclient, cr, clusterExistingPod)
+	endpoint, err := redisservice.GetEndpoint(ctx, k8sclient, cr, clusterExistingPod)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to get endpoint for cluster existing pod", "Pod", clusterExistingPod.PodName)
+		return
+	}
 	for _, followerNodeID := range attachedFollowerNodeIDs {
 		ri := &RedisInvocation{
 			Command: []string{"redis-cli", "--cluster", "del-node", endpoint, followerNodeID},
@@ -313,8 +433,8 @@ func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interfa
 	return nil
 }
 
-func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instance *rcvb2.RedisCluster, podIndex int32) error {
-	slavePodName := GetPodName(instance.Name, "follower", int(podIndex))
+// redis-cli cluster failover
+func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instance *rcvb2.RedisCluster, slavePodName string) error {
 	cmd := RedisInvocation{
 		Command: []string{"redis-cli", "cluster", "failover"},
 	}
@@ -325,4 +445,14 @@ func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instan
 	}
 	log.FromContext(ctx, "Cluster failover completed", "Pod", slavePodName)
 	return nil
+}
+
+func RepairDisconnectedMasters(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+	return nil
+}
+func CheckIfEmptyMasters(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+	return nil
+}
+func RedisClusterStatusHealth(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) bool {
+	return false
 }

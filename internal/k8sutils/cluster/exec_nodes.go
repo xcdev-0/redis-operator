@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -13,45 +12,57 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// CheckRedisNodeCount는 클러스터 내 지정된 타입의 노드 개수를 반환합니다.
-// nodeType이 빈 문자열이면 전체 노드 개수를 반환합니다.
-func CheckRedisNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) int32 {
+func GetClusterLeaderNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) int32 {
 	executionPodName := GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
-	var redisNodeType string
-	clusterNodes, err := GetClusterNodeResponse(ctx, redisClient)
+
+	clusterNodes, err := GetClusterNodes(ctx, redisClient)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
 	}
 
-	// 노드 타입 상관없을때는 바로 반환
-	if nodeType == "" {
-		log.FromContext(ctx).V(1).Info("Total number of redisutils nodes are", "Nodes", strconv.Itoa(len(clusterNodes)))
-		return int32(len(clusterNodes))
+	count := 0
+	for _, node := range clusterNodes {
+		if node.IsLeader() {
+			count++
+		}
 	}
+	return int32(count)
+}
+func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) int32 {
+	executionPodName := GetExecutionPodName(cr.Name)
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
+	defer redisClient.Close()
 
-	switch nodeType {
-	case "leader":
-		redisNodeType = "master"
-	case "follower":
-		redisNodeType = "slave"
-	default:
-		redisNodeType = nodeType
+	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
 	}
 
 	count := 0
 	for _, node := range clusterNodes {
-		if nodeHasRole(node, redisNodeType) {
+		if node.IsFollower() {
 			count++
 		}
 	}
-	log.FromContext(ctx).V(1).Info("Number of redis nodes are", "Nodes", strconv.Itoa(count), "Type", nodeType)
-
 	return int32(count)
+}
+func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, flagRole string) int32 {
+	executionPodName := GetExecutionPodName(cr.Name)
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
+	defer redisClient.Close()
+
+	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
+	}
+
+	return int32(len(clusterNodes))
 }
 
 // getRedisNodeID는 지정된 Pod의 Redis 노드 ID를 반환합니다.
+// Redis 명령어: PING, CLUSTER MYID
 func getRedisNodeID(
 	ctx context.Context,
 	client kubernetes.Interface,
@@ -83,8 +94,8 @@ func getRedisNodeID(
 	return output
 }
 
-// getRedisClusterSlots는 지정된 노드 ID가 담당하는 클러스터 슬롯 수를 반환합니다.
-func getRedisClusterSlots(ctx context.Context, redisClient *redis.Client, nodeID string) (string, error) {
+// Redis 명령어: CLUSTER SLOTS
+func getClusterSlotByNodeID(ctx context.Context, redisClient *redis.Client, nodeID string) (string, error) {
 	totalSlots := 0
 
 	redisSlots, err := redisClient.ClusterSlots(ctx).Result()
@@ -103,7 +114,7 @@ func getRedisClusterSlots(ctx context.Context, redisClient *redis.Client, nodeID
 	return strconv.Itoa(totalSlots), nil
 }
 
-// getAttachedFollowerNodeIDs는 지정된 리더 노드에 연결된 follower 노드들의 ID 목록을 반환합니다.
+// Redis 명령어: CLUSTER SLAVES
 func getAttachedFollowerNodeIDs(ctx context.Context, redisClient *redis.Client, leaderNodeID string) []string {
 	followers, err := redisClient.ClusterSlaves(ctx, leaderNodeID).Result()
 	if err != nil {
@@ -119,7 +130,28 @@ func getAttachedFollowerNodeIDs(ctx context.Context, redisClient *redis.Client, 
 	return followerIDs
 }
 
-func IsLeaderNode(ctx context.Context, redisClient *redis.Client) (bool, error) {
+func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, cr.Name+"-leader-0")
+	defer redisClient.Close()
+	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, node := range clusterNodes {
+		if node.IsFailedOrDisconnected() {
+			count++
+		}
+	}
+	log.FromContext(ctx).V(1).Info("Number of failed nodes in cluster", "Failed Node Count", count)
+	return int32(count), nil
+}
+
+// Redis 명령어: INFO replication
+func IsLeaderNode(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (bool, error) {
+	redisClient := redisservice.ConfigureRedisClient(ctx, k8sclient, cr, podName)
+	defer redisClient.Close()
+
 	info, err := redisClient.Info(ctx, "replication").Result()
 	if err != nil {
 		return false, err
@@ -132,79 +164,13 @@ func IsLeaderNode(ctx context.Context, redisClient *redis.Client) (bool, error) 
 	return false, nil
 }
 
-// IsLeaderPod는 지정된 인덱스의 Pod이 Redis 리더인지 확인합니다.
-func IsLeaderPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, leadIndex int32) bool {
-	podName := GetPodName(cr.Name, "leader", int(leadIndex))
-	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, podName)
-	defer redisClient.Close()
-	isMaster, err := IsLeaderNode(ctx, redisClient)
-	if err != nil {
-		return false
-	}
-	return isMaster
-}
-
-// nodeRoles는 노드의 역할 목록을 반환합니다.
-func nodeRoles(node clusterNodesResponse) []string {
-	return strings.Split(node[2], ",")
-}
-
-// nodeHasRole은 노드가 지정된 역할을 가지고 있는지 확인합니다.
-func nodeHasRole(node clusterNodesResponse, role string) bool {
-	for _, r := range nodeRoles(node) {
-		if r == role {
+func checkRedisNodePresence(ctx context.Context, nodes []ClusterNode, podIP string) bool {
+	// clusterNode.Address -> ip:port@cport
+	for _, node := range nodes {
+		ip := strings.Split(node.Address, ":")[0]
+		if ip == podIP {
 			return true
 		}
 	}
 	return false
-}
-func GetClusterNodeResponse(ctx context.Context, redisClient *redis.Client) ([]clusterNodesResponse, error) {
-	output, err := redisClient.ClusterNodes(ctx).Result()
-	// <nodeid> <ip:port@cport> <flags> <master-id> <ping> <pong> <epoch> <state> <slots>
-	// flags: master, slave, myself, fail ...
-	// master-id: master node id (slave only, if not slave, it is '-')
-	// ping: last sent ping time
-	// pong: last pong received
-	// epoch: config epoch
-	// link-state: disconnected, connected
-	// slots: slots assigned to the node
-	if err != nil {
-		return nil, err
-	}
-
-	csvOutput := csv.NewReader(strings.NewReader(output))
-	// 구분자 설정
-	csvOutput.Comma = ' '
-	// 레코드별로 필드 수 달라도 되도록
-	csvOutput.FieldsPerRecord = -1
-	csvOutputRecords, err := csvOutput.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	response := make([]clusterNodesResponse, 0, len(csvOutputRecords))
-	for _, record := range csvOutputRecords {
-		response = append(response, record)
-	}
-	return response, nil
-}
-
-func nodeFailedOrDisconnected(node clusterNodesResponse) bool {
-	return strings.Contains(node[2], "fail") || strings.Contains(node[7], "disconnected")
-}
-
-func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
-	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, cr.Name+"-leader-0")
-	defer redisClient.Close()
-	clusterNodes, err := GetClusterNodeResponse(ctx, redisClient)
-	if err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, node := range clusterNodes {
-		if nodeFailedOrDisconnected(node) {
-			count++
-		}
-	}
-	log.FromContext(ctx).V(1).Info("Number of failed nodes in cluster", "Failed Node Count", count)
-	return int32(count), nil
 }

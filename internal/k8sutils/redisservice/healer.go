@@ -1,4 +1,4 @@
-package cluster
+package redisservice
 
 import "k8s.io/client-go/kubernetes"
 

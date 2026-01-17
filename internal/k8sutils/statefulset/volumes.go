@@ -17,17 +17,59 @@ func generateEmptyVolume(volumeName string) corev1.Volume {
 	}
 }
 
-func generateConfigVolumeMount(volumeName string) corev1.VolumeMount {
+func generateConfigVolumeMount() corev1.VolumeMount {
 	return corev1.VolumeMount{
-		Name:      volumeName,
+		Name:      consts.ConfigVolumeName,
 		MountPath: "/etc/redis",
 	}
 }
 
-func generateExternalConfigVolumeMount(volumeName string) corev1.VolumeMount {
+func generateExternalConfigVolumeMount() corev1.VolumeMount {
 	return corev1.VolumeMount{
-		Name:      volumeName,
+		Name:      consts.ExternalConfigVolumeName,
 		MountPath: "/etc/redis/external.conf.d",
+	}
+}
+
+// generateNodeConfVolumeMount는 클러스터 모드에서 노드 설정 볼륨 마운트를 생성합니다.
+func generateNodeConfVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      consts.NodeConfVolumeName,
+		MountPath: "/node-conf",
+	}
+}
+
+// generatePersistenceVolumeMount는 데이터 영속성을 위한 PVC 볼륨 마운트를 생성합니다.
+func generatePersistenceVolumeMount(name string) corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, name),
+		MountPath: "/data",
+	}
+}
+
+// generateTLSVolumeMount는 TLS 인증서 볼륨 마운트를 생성합니다.
+func generateTLSVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      consts.TLSCertsVolumeName,
+		ReadOnly:  true,   // 읽기 전용 (보안)
+		MountPath: "/tls", // TLS 인증서 경로
+	}
+}
+
+// generateACLVolumeMount는 ACL 설정 파일 볼륨 마운트를 생성합니다.
+// ACL이 설정되지 않았거나 볼륨 이름이 없으면 nil을 반환합니다.
+func generateACLVolumeMount(acl *ACLConfig) *corev1.VolumeMount {
+	if acl == nil {
+		return nil
+	}
+	volumeName := acl.GetVolumeName()
+	if volumeName == "" {
+		return nil
+	}
+	return &corev1.VolumeMount{
+		Name:      volumeName,
+		MountPath: "/etc/redis/user.acl",
+		SubPath:   "user.acl",
 	}
 }
 
@@ -53,59 +95,96 @@ type volumeMountParams struct {
 	ClusterModeEnabled     bool
 	NodeConfVolumeEnabled  bool
 	ExternalConfig         *string
-	TLS                    *tlsConfig
-	ACL                    *aclConfig
+	TLS                    *TLSConfig
+	ACL                    *ACLConfig
 }
 
-func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
+// getVolumeMountForUserInitContainer는 User Init Container용 볼륨 마운트를 생성합니다.
+// Init Container는 기본 설정 볼륨과 선택적으로 데이터 볼륨만 필요합니다.
+func getVolumeMountForUserInitContainer(name string, persistence bool, additional []corev1.VolumeMount) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
+	// 데이터 영속성 볼륨 (선택적)
+	if persistence {
+		mounts = append(mounts, generatePersistenceVolumeMount(name))
+	}
+
+	// 기본 설정 볼륨 (항상 포함)
+	mounts = append(mounts, generateConfigVolumeMount())
+
+	// 추가 볼륨 마운트
+	mounts = append(mounts, additional...)
+
+	return mounts
+}
+
+// getVolumeMountForMainContainer는 Redis 메인 컨테이너용 볼륨 마운트를 생성합니다.
+// 메인 컨테이너는 모든 볼륨 타입이 필요할 수 있습니다.
+func getVolumeMountForMainContainer(p volumeMountParams) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+
+	// 클러스터 모드 + 노드 설정 볼륨
 	if p.ClusterModeEnabled && p.NodeConfVolumeEnabled && p.Persistence {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      consts.NodeConfVolumeName,
-			MountPath: "/node-conf",
-		})
+		mounts = append(mounts, generateNodeConfVolumeMount())
 	}
 
+	// 데이터 영속성 볼륨
 	if p.Persistence {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, p.Name),
-			MountPath: "/data",
-		})
+		mounts = append(mounts, generatePersistenceVolumeMount(p.Name))
 	}
 
+	// TLS 인증서 볼륨
 	if p.TLS != nil {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      consts.TLSCertsVolumeName,
-			ReadOnly:  true,   // 읽기 전용 (보안)
-			MountPath: "/tls", // TLS 인증서 경로
-		})
-	}
-	if p.ACL != nil {
-		volumeName := p.ACL.GetVolumeName()
-		if volumeName != "" {
-			mounts = append(mounts, corev1.VolumeMount{
-				Name:      volumeName,
-				MountPath: "/etc/redis/user.acl",
-				SubPath:   "user.acl",
-			})
-		}
+		mounts = append(mounts, generateTLSVolumeMount())
 	}
 
-	// 유저가 제공한 컨피그맵을 마운트
-	// 컨피그맵 -> external-config 볼륨 이 볼륨을 마운트
+	// ACL 설정 볼륨
+	if aclMount := generateACLVolumeMount(p.ACL); aclMount != nil {
+		mounts = append(mounts, *aclMount)
+	}
+
+	// 외부 설정 볼륨 (유저가 제공한 컨피그맵)
 	if p.ExternalConfig != nil {
-		mounts = append(mounts,
-			generateExternalConfigVolumeMount(consts.ExternalConfigVolumeName))
+		mounts = append(mounts, generateExternalConfigVolumeMount())
 	}
 
-	// Init Container에서 생성한 설정 파일 볼륨 마운트
-	mounts = append(mounts, generateConfigVolumeMount(consts.ConfigVolumeName))
+	// 기본 설정 볼륨 (항상 포함)
+	mounts = append(mounts, generateConfigVolumeMount())
 
 	// 추가 볼륨 마운트
 	mounts = append(mounts, p.AdditionalVolumeMounts...)
 
 	return mounts
+}
+
+// getVolumeMountForExporter는 Redis Exporter 사이드카 컨테이너용 볼륨 마운트를 생성합니다.
+// Exporter는 TLS 인증서와 ACL만 필요하며, 데이터 볼륨은 필요 없습니다.
+func getVolumeMountForExporter(tls *TLSConfig, acl *ACLConfig, additional []corev1.VolumeMount) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+
+	// TLS 인증서 볼륨
+	if tls != nil {
+		mounts = append(mounts, generateTLSVolumeMount())
+	}
+
+	// ACL 설정 볼륨
+	if aclMount := generateACLVolumeMount(acl); aclMount != nil {
+		mounts = append(mounts, *aclMount)
+	}
+
+	// 기본 설정 볼륨 (항상 포함)
+	mounts = append(mounts, generateConfigVolumeMount())
+
+	// 추가 볼륨 마운트
+	mounts = append(mounts, additional...)
+
+	return mounts
+}
+
+// getVolumeMount는 기존 호환성을 위해 유지하지만, 내부적으로 getVolumeMountForMainContainer를 사용합니다.
+// Deprecated: 사용처별 전용 함수를 사용하는 것을 권장합니다.
+func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
+	return getVolumeMountForMainContainer(p)
 }
 
 func createPVCTemplate(volumeName string, objectMeta metav1.ObjectMeta, pvc corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {

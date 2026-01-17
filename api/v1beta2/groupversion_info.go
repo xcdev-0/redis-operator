@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1beta2 contains API Schema definitions for the rediscluster v1beta2 API group.
+// Package v1beta2 contains API Schema definitions for the cluster v1beta2 API group.
 // +kubebuilder:object:generate=true
-// +groupName=rediscluster.redis.ejlabs.in
+// +groupName=cluster.redisutils.ejlabs.in
 package v1beta2
 
 import (
@@ -26,11 +26,11 @@ import (
 
 var (
 	// GroupVersion is group version used to register these objects.
-	GroupVersion = schema.GroupVersion{Group: "rediscluster.redis.ejlabs.in", Version: "v1beta2"}
+	GroupVersion = schema.GroupVersion{Group: "cluster.redisutils.ejlabs.in", Version: "v1beta2"}
 
-	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
+	// SchemeBuilder is used to add go stsmodel to the GroupVersionKind scheme.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
-	// AddToScheme adds the types in this group-version to the given scheme.
+	// AddToScheme adds the stsmodel in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )

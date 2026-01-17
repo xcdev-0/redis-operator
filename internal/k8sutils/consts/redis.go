@@ -1,51 +1,54 @@
 package consts
 
 const (
-	RedisPort             = 6379
-	RedisExporterPort     = 9121
-	RedisExporterPortName = "redisutils-exporter"
-	RedisBusPortName      = "redisutils-bus"
-	RedisClientPortName   = "redisutils-client"
+	RedisPort = 6379
+
+	RedisExporterPort      = 9121
+	RedisExporterPortName  = "redis-exporter"
+	RedisExporterContainer = "redis-exporter"
+
+	RedisBusPortName    = "redis-bus"
+	RedisClientPortName = "redis-client"
 )
 
 // Redis 기본 환경 변수 이름
 const (
-	// EnvRedisServerMode는 Redis 서버 모드를 설정합니다 (leader, follower, sentinel, cluster 등)
-	EnvRedisServerMode = "SERVER_MODE"
-	// EnvRedisSetupMode는 Init Container에서 사용하는 설정 모드입니다
-	EnvRedisSetupMode = "SETUP_MODE"
-	// EnvRedisMajorVersion는 Redis 클러스터 버전을 설정합니다 (예: "7", "6")
-	EnvRedisMajorVersion = "REDIS_MAJOR_VERSION"
-	// EnvRedisPort는 Redis 포트 번호를 설정합니다
-	EnvRedisPort = "REDIS_PORT"
-	// EnvRedisAddr는 Redis 연결 주소를 설정합니다 (예: redisutils://localhost:6379)
-	EnvRedisAddr = "REDIS_ADDR"
-	// EnvRedisPassword는 Redis 비밀번호를 설정합니다 (Secret에서 가져옴)
-	EnvRedisPassword = "REDIS_PASSWORD"
-	// EnvRedisMaxMemory는 Redis 최대 메모리 사용량을 설정합니다 (바이트 단위)
-	EnvRedisMaxMemory = "REDIS_MAX_MEMORY"
+	// REDIS_SERVER_MODE는 Redis 서버 모드를 설정합니다 (leader, follower, sentinel, cluster 등)
+	REDIS_SERVER_MODE = "SERVER_MODE"
+	// REDIS_SETUP_MODE는 Init Container에서 사용하는 설정 모드입니다
+	REDIS_SETUP_MODE = "SETUP_MODE"
+	// REDIS_MAJOR_VERSION는 Redis 클러스터 버전을 설정합니다 (예: "7", "6")
+	REDIS_MAJOR_VERSION = "REDIS_MAJOR_VERSION"
+	// REDIS_PORT는 Redis 포트 번호를 설정합니다
+	REDIS_PORT = "REDIS_PORT"
+	// REDIS_ADDR는 Redis 연결 주소를 설정합니다 (예: redisutils://localhost:6379)
+	REDIS_ADDR = "REDIS_ADDR"
+	// REDIS_PASSWORD는 Redis 비밀번호를 설정합니다 (Secret에서 가져옴)
+	REDIS_PASSWORD = "REDIS_PASSWORD"
+	// REDIS_MAX_MEMORY는 Redis 최대 메모리 사용량을 설정합니다 (바이트 단위)
+	REDIS_MAX_MEMORY = "REDIS_MAX_MEMORY"
 )
 
 // TLS 관련 환경 변수 이름
 const (
-	// EnvTLSMode는 TLS 모드 활성화 여부를 설정합니다
-	EnvTLSMode = "TLS_MODE"
-	// EnvTLSCAKey는 TLS CA 인증서 경로를 설정합니다
-	EnvTLSCAKey = "REDIS_TLS_CA_KEY"
-	// EnvTLSCert는 TLS 서버 인증서 경로를 설정합니다
-	EnvTLSCert = "REDIS_TLS_CERT"
-	// EnvTLSCertKey는 TLS 서버 개인키 경로를 설정합니다
-	EnvTLSCertKey = "REDIS_TLS_CERT_KEY"
+	// TLS_MODE는 TLS 모드 활성화 여부를 설정합니다
+	TLS_MODE = "TLS_MODE"
+	// REDIS_TLS_CA_CERT는 TLS CA 인증서 경로를 설정합니다
+	REDIS_TLS_CA_CERT = "REDIS_TLS_CA_CERT"
+	// REDIS_TLS_CERT는 TLS 서버 인증서 경로를 설정합니다
+	REDIS_TLS_CERT = "REDIS_TLS_CERT"
+	// REDIS_TLS_KEY는 TLS 서버 개인키 경로를 설정합니다
+	REDIS_TLS_KEY = "REDIS_TLS_KEY"
 )
 
 // ACL 관련 환경 변수 이름
 const (
-	// EnvACLMode는 ACL 모드 활성화 여부를 설정합니다
-	EnvACLMode = "ACL_MODE"
+	// ACL_MODE는 ACL 모드 활성화 여부를 설정합니다
+	ACL_MODE = "ACL_MODE"
 )
 
 // Persistence 관련 환경 변수 이름
 const (
-	// EnvPersistenceEnabled는 데이터 영속성 활성화 여부를 설정합니다
-	EnvPersistenceEnabled = "PERSISTENCE_ENABLED"
+	// PERSISTENCE_ENABLED는 데이터 영속성 활성화 여부를 설정합니다
+	PERSISTENCE_ENABLED = "PERSISTENCE_ENABLED"
 )

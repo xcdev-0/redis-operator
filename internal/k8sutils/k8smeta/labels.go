@@ -4,17 +4,23 @@ import (
 	"maps"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type SetupType string
 
 const (
-	Cluster SetupType = "cluster"
+	SetupTypeCluster SetupType = "cluster"
 )
 
-// 이 라벨들은 변경되지 않아야 하며, StatefulSet이 Pod를 식별하는 데 사용됩니다.
-var StableLabelKeys = []string{"app", "redis_setup_type", "role"}
+// StableLabelKeys는 StatefulSet이 Pod를 식별하는 데 사용하는 안정적인 라벨 키 목록입니다.
+// 이 라벨들은 변경되지 않아야 합니다.
+var StableLabelKeys = []string{
+	consts.LabelKeyApp,
+	consts.LabelKeyRole,
+	consts.LabelKeyCluster,
+}
 
 func RedisClusterAsOwner(cr *rcvb2.RedisCluster) metav1.OwnerReference {
 	trueVar := true
@@ -28,33 +34,41 @@ func RedisClusterAsOwner(cr *rcvb2.RedisCluster) metav1.OwnerReference {
 }
 
 type RedisLabels struct {
-	Name      string
-	SetupType SetupType
-	Role      string
-	Labels    map[string]string
+	STSName          string
+	Role             string
+	AdditionalLabels map[string]string // 추가적인 라벨들
+	ClusterName      string
 }
 
-func GetRedisLabels(rl *RedisLabels) map[string]string {
-	newRedisLabels := map[string]string{
-		"app":              rl.Name,
-		"redis_setup_type": string(rl.SetupType),
-		"role":             rl.Role,
+// GetCurrentMasterSelectorLabels는 failover 등으로 클러스터 내 역할이 바뀔 수 있으므로,
+// 실제 클러스터 내 역할(master/slave)을 나타내는 라벨로 Pod를 찾기 위한 셀렉터를 생성합니다.
+// 주의: app과 role은 StatefulSet 이름과 역할이므로 실제 클러스터 내 역할을 나타내지 않습니다.
+func GetCurrentMasterSelectorLabels(clusterName string, currentRole string) map[string]string {
+	return map[string]string{
+		consts.LabelKeyCurrentRole: currentRole,
+		consts.LabelKeyCluster:     clusterName,
 	}
-	maps.Copy(newRedisLabels, rl.Labels)
-	return newRedisLabels
 }
 
-func ExtractStatefulSetSelectorLabels(givenLabels map[string]string) map[string]string {
-	stableLabels := make(map[string]string)
+// GetRedisClusterLabels는 Redis 클러스터 리소스에 사용할 라벨 맵을 생성합니다.
+func GetRedisClusterLabels(rl *RedisLabels) map[string]string {
+	newLabels := map[string]string{
+		consts.LabelKeyApp:     rl.STSName,
+		consts.LabelKeyRole:    rl.Role,
+		consts.LabelKeyCluster: rl.ClusterName,
+	}
+	maps.Copy(newLabels, rl.AdditionalLabels)
+	return newLabels
+}
 
+// GetRedisClusterStableLabels는 주어진 라벨 맵에서 안정적인 라벨만 추출합니다.
+// StatefulSet selector와 일관성을 유지하기 위해 사용됩니다.
+func GetRedisClusterStableLabels(givenLabels map[string]string) map[string]string {
+	stableLabels := make(map[string]string, len(StableLabelKeys))
 	for _, key := range StableLabelKeys {
 		if value, exists := givenLabels[key]; exists {
 			stableLabels[key] = value
 		}
 	}
-
 	return stableLabels
-}
-func LabelSelectors(labels map[string]string) *metav1.LabelSelector {
-	return &metav1.LabelSelector{MatchLabels: labels}
 }

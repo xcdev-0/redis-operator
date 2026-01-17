@@ -27,7 +27,7 @@ pidfile /var/run/redisutils.pid
 `
 
 func applyAuth(cfg *agentutil.Config) {
-	if val, ok := util.CoalesceEnv(consts.EnvRedisPassword, ""); ok && val != "" {
+	if val, ok := util.CoalesceEnv(consts.REDIS_PASSWORD, ""); ok && val != "" {
 		cfg.Append("masterauth", val)       // Master-Replica 복제 인증
 		cfg.Append("requirepass", val)      // 클라이언트 인증
 		cfg.Append("protected-mode", "yes") // 보호 모드 활성화
@@ -102,12 +102,12 @@ func applyTLS(cfg *agentutil.Config, tlsMode, redisMajorVersion, nodeport string
 	}
 
 	// TLS 인증서 파일 경로 설정
-	cfg.Append("tls-cert-file", util.CoalesceEnv1(consts.EnvTLSCert, ""))     // 서버 인증서
-	cfg.Append("tls-key-file", util.CoalesceEnv1(consts.EnvTLSCertKey, ""))   // 서버 개인키
-	cfg.Append("tls-ca-cert-file", util.CoalesceEnv1(consts.EnvTLSCAKey, "")) // CA 인증서 (클라이언트 인증용)
-	cfg.Append("tls-auth-clients", "optional")                                // 클라이언트 인증: optional (선택적)
-	cfg.Append("tls-replication", "yes")                                      // Master-Replica 복제 시 TLS 사용
-	cfg.Append("tls-cluster", "yes")                                          // 클러스터 노드 간 통신 시 TLS 사용
+	cfg.Append("tls-cert-file", util.CoalesceEnv1(consts.REDIS_TLS_CERT, ""))       // 서버 인증서
+	cfg.Append("tls-key-file", util.CoalesceEnv1(consts.REDIS_TLS_KEY, ""))         // 서버 개인키
+	cfg.Append("tls-ca-cert-file", util.CoalesceEnv1(consts.REDIS_TLS_CA_CERT, "")) // CA 인증서 (클라이언트 인증용)
+	cfg.Append("tls-auth-clients", "optional")                                      // 클라이언트 인증: optional (선택적)
+	cfg.Append("tls-replication", "yes")                                            // Master-Replica 복제 시 TLS 사용
+	cfg.Append("tls-cluster", "yes")                                                // 클러스터 노드 간 통신 시 TLS 사용
 
 	// Redis v7 + 일반 모드: 호스트명을 우선 사용 (IP 변경에 더 안정적)
 	if redisMajorVersion == "v7" && nodeport == "false" {
@@ -119,8 +119,8 @@ func applyTLS(cfg *agentutil.Config, tlsMode, redisMajorVersion, nodeport string
 // ACL을 사용하면 사용자별로 접근 권한을 세밀하게 제어할 수 있습니다.
 // 예: 특정 키에만 읽기 권한, 특정 명령어만 실행 가능 등
 func applyACL(cfg *agentutil.Config) {
-	if aclMode := util.CoalesceEnv1(consts.EnvACLMode, ""); aclMode == "true" {
-		cfg.Append("aclfile", "/etc/redisutils/user.acl") // ACL 규칙이 저장된 파일 경로
+	if aclMode := util.CoalesceEnv1(consts.ACL_MODE, ""); aclMode == "true" {
+		cfg.Append("aclfile", "/etc/redis/user.acl") // ACL 규칙이 저장된 파일 경로
 	} else {
 		fmt.Println("ACL_MODE is not true, skipping ACL file modification")
 	}
@@ -193,7 +193,7 @@ func applyNodePort(cfg *agentutil.Config, nodeport, tlsMode string) {
 // maxmemory: Redis가 사용할 수 있는 최대 메모리 크기
 // 메모리가 가득 차면 eviction 정책에 따라 오래된 데이터를 제거합니다.
 func applyMemory(cfg *agentutil.Config) {
-	if maxMemory := util.CoalesceEnv1(consts.EnvRedisMaxMemory, ""); maxMemory != "" {
+	if maxMemory := util.CoalesceEnv1(consts.REDIS_MAX_MEMORY, ""); maxMemory != "" {
 		cfg.Append("maxmemory", maxMemory)
 	}
 }
@@ -211,17 +211,16 @@ func applyExternalConfig(cfg *agentutil.Config, externalConfigFile string) {
 // GenerateConfig는 환경 변수를 읽어서 Redis 설정 파일(redisutils.conf)을 동적으로 생성합니다.
 // 이 함수는 Init Container에서 실행되며, Pod가 시작되기 전에 Redis 설정을 준비합니다.
 func GenerateConfig() error {
-	// Config 객체 생성: 기본 설정 템플릿을 로드하고, 최종적으로 /etc/redisutils/redisutils.conf에 저장
-	cfg := agentutil.NewConfig("/etc/redisutils/redisutils.conf", defaultRedisConfig)
+	cfg := agentutil.NewConfig("/etc/redis/redis.conf", defaultRedisConfig)
 	var (
-		persistenceEnabled = util.CoalesceEnv1(consts.EnvPersistenceEnabled, "false")                                                // 데이터 영속화 활성화 여부
-		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                                                                  // Redis 데이터 저장 디렉토리
-		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")                                                        // 클러스터 nodes.conf 파일 위치
-		externalConfigFile = util.CoalesceEnv1("EXTERNAL_CONFIG_FILE", "/etc/redisutils/external.conf.d/redisutils-additional.conf") // 사용자 정의 설정 파일
-		redisMajorVersion  = util.CoalesceEnv1(consts.EnvRedisMajorVersion, "v7")                                                    // Redis 메이저 버전 (v6 또는 v7)
-		redisPort          = util.CoalesceEnv1(consts.EnvRedisPort, "6379")                                                          // Redis 포트 번호
-		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                                                                  // NodePort 모드 사용 여부 (Kubernetes Service 타입)
-		tlsMode            = util.CoalesceEnv1(consts.EnvTLSMode, "false")                                                           // TLS 암호화 활성화 여부
+		persistenceEnabled = util.CoalesceEnv1(consts.PERSISTENCE_ENABLED, "false")                                        // 데이터 영속화 활성화 여부
+		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                                                        // Redis 데이터 저장 디렉토리
+		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")                                              // 클러스터 nodes.conf 파일 위치
+		externalConfigFile = util.CoalesceEnv1("EXTERNAL_CONFIG_FILE", "/etc/redis/external.conf.d/redis-additional.conf") // 사용자 정의 설정 파일
+		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")                                           // Redis 메이저 버전 (v6 또는 v7)
+		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")                                                  // Redis 포트 번호
+		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                                                        // NodePort 모드 사용 여부 (Kubernetes Service 타입)
+		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")                                                   // TLS 암호화 활성화 여부
 		// clusterMode        = util.CoalesceEnv1(consts.EnvRedisSetupMode, "cluster")                                        // Redis 모드: "standalone" 또는 "cluster"
 	)
 

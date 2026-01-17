@@ -9,8 +9,8 @@ import (
 	redisclustercontroller "github.com/xcdev-0/redis-operator/internal/controller"
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/redis"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulsetservice"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisutils"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	"github.com/xcdev-0/redis-operator/internal/scheme"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -121,6 +121,7 @@ func runManager(opts *managerOptions) error {
 	}
 	cfg.Timeout = viper.GetDuration(KubeClientTimeoutMGRFlag)
 
+	// Manager 생성 -> 내부에 Informer와 Cache가 생성됨
 	ctrlOptions := createControllerOptions(opts)
 	mgr, err := ctrl.NewManager(cfg, ctrlOptions)
 	if err != nil {
@@ -169,7 +170,7 @@ func createControllerOptions(opts *managerOptions) ctrl.Options {
 
 		HealthProbeBindAddress: opts.probeAddr,
 		LeaderElection:         opts.enableLeaderElection,
-		LeaderElectionID:       "770c900a.redis.ejlabs.in",
+		LeaderElectionID:       "770c900a.redisutils.ejlabs.in",
 	}
 
 	if opts.pprofAddr != "" {
@@ -203,19 +204,19 @@ func setupControllers(mgr ctrl.Manager, k8sClient kubernetes.Interface, maxConcu
 
 	// Healer는 Pod의 역할(role) 라벨을 동기화하는 유틸리티입니다.
 	// 여러 Controller에서 공유하여 사용합니다.
-	healer := redis.NewHealer(k8sClient)
+	healer := redisutils.NewHealer(k8sClient)
 
 	if err := (&redisclustercontroller.RedisClusterReconciler{
-		Client:      mgr.GetClient(),                                     // CRD 읽기/쓰기용
-		K8sClient:   k8sClient,                                           // Pod 실행, 명령 실행용
-		Healer:      healer,                                              // Pod 라벨 동기화용
-		Checker:     redis.NewChecker(k8sClient),                         // 클러스터 상태 확인용
-		Recorder:    mgr.GetEventRecorderFor("rediscluster-controller"),  // Kubernetes Event 기록용
-		StatefulSet: statefulsetservice.NewStatefulSetService(k8sClient), // StatefulSet 유틸리티
+		Client:             mgr.GetClient(),                               // CRD 읽기/쓰기용
+		StatefulSetService: statefulset.NewStatefulSetService(k8sClient),  // StatefulSet 유틸리티
+		K8sClient:          k8sClient,                                     // Pod 실행, 명령 실행용
+		Healer:             healer,                                        // Pod 라벨 동기화용
+		Recorder:           mgr.GetEventRecorderFor("cluster-controller"), // Kubernetes Event 기록용
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RedisCluster")
 		return err
 	}
+	// Manager의 Informer가 API Server에 Watch 요청
 
 	return nil
 }
