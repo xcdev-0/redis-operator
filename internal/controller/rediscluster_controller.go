@@ -55,9 +55,9 @@ const (
 	RedisClusterFinalizer = "redis.ejlabs.in/finalizer"
 )
 
-// +kubebuilder:rbac:groups=cluster.redisutils.ejlabs.in,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cluster.redisutils.ejlabs.in,resources=redisclusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cluster.redisutils.ejlabs.in,resources=redisclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=rediscluster.ejlabs.in,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rediscluster.ejlabs.in,resources=redisclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=rediscluster.ejlabs.in,resources=redisclusters/finalizers,verbs=update
 
 func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)

@@ -242,13 +242,13 @@ func applyExternalConfig(cfg *agentutil.Config, externalConfigDir string) {
 func GenerateConfig() error {
 	cfg := agentutil.NewConfig("/etc/redis/redis.conf", defaultRedisConfig)
 	var (
-		persistenceEnabled = util.CoalesceEnv1(consts.PERSISTENCE_ENABLED, "false") // 데이터 영속화 활성화 여부
-		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                 // Redis 데이터 저장 디렉토리
-		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")       // 클러스터 nodes.conf 파일 위치
-		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")    // Redis 메이저 버전 (v6 또는 v7)
-		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")           // Redis 포트 번호
-		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                 // NodePort 모드 사용 여부 (Kubernetes Service 타입)
-		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")            // TLS 암호화 활성화 여부
+		persistenceEnabled = util.CoalesceEnv1(consts.DATA_PERSISTENCE_ENABLED, "false") // 데이터 영속화 활성화 여부
+		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                      // Redis 데이터 저장 디렉토리
+		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")            // 클러스터 nodes.conf 파일 위치
+		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")         // Redis 메이저 버전 (v6 또는 v7)
+		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")                // Redis 포트 번호
+		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                      // NodePort 모드 사용 여부 (Kubernetes Service 타입)
+		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")                 // TLS 암호화 활성화 여부
 	)
 
 	applyAuth(cfg)

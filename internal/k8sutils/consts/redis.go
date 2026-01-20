@@ -49,6 +49,6 @@ const (
 
 // Persistence 관련 환경 변수 이름
 const (
-	// PERSISTENCE_ENABLED는 데이터 영속성 활성화 여부를 설정합니다
-	PERSISTENCE_ENABLED = "PERSISTENCE_ENABLED"
+	// DATA_PERSISTENCE_ENABLED는 데이터 영속성 활성화 여부를 설정합니다
+	DATA_PERSISTENCE_ENABLED = "PERSISTENCE_ENABLED"
 )

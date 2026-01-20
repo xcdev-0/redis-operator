@@ -1,4 +1,4 @@
-apiVersion: cluster.redisutils.ejlabs.in/v1beta2
+apiVersion: rediscluster.ejlabs.in/v1beta2
 kind: RedisCluster
 metadata:
   name: test-redis-cluster
@@ -6,22 +6,24 @@ metadata:
 spec:
   clusterSize: 3
   clusterVersion: v7
-  persistenceEnabled: true
   
   storage:
-    nodeConfVolume: true
-    nodeConfVolumeClaimTemplate:
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 100Mi
-    volumeClaimTemplate:
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
+    node:
+      enabled: true
+      claimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Mi
+    data:
+      enabled: true
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
   
   redisLeader:
     replicaCount: 3

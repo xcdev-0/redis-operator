@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  name: rediscluster-manager-role
 rules:
 - nonResourceURLs:
   - '*'
@@ -47,32 +47,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - cluster.redisutils.ejlabs.in
-  resources:
-  - redisclusters
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - cluster.redisutils.ejlabs.in
-  resources:
-  - redisclusters/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - cluster.redisutils.ejlabs.in
-  resources:
-  - redisclusters/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -138,6 +112,32 @@ rules:
   - redisreplications/status
   - redissentinel/status
   - redissentinels/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - rediscluster.ejlabs.in
+  resources:
+  - redisclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rediscluster.ejlabs.in
+  resources:
+  - redisclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - rediscluster.ejlabs.in
+  resources:
+  - redisclusters/status
   verbs:
   - get
   - patch

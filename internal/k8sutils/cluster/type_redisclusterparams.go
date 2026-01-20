@@ -134,9 +134,9 @@ func generateStatefulSetParams(ctx context.Context,
 	}
 	// 스토리지 설정 (데이터 저장용 PVC 및 노드 설정용 PVC)
 	if cr.Spec.Storage != nil {
-		stsParams.DataPVC = cr.Spec.Storage.VolumeClaimTemplate                 // 데이터 저장용 PVC 템플릿
-		stsParams.NodeConfVolumeEnabled = cr.Spec.Storage.NodeConfVolumeEnabled // 노드 설정 볼륨 사용 여부
-		stsParams.NodeConfPVC = cr.Spec.Storage.NodeConfVolumeClaimTemplate     // 노드 설정 저장용 PVC 템플릿
+		stsParams.DataPVC = cr.Spec.Storage.Data.VolumeClaimTemplate   // 데이터 저장용 PVC 템플릿
+		stsParams.NodeConfVolumeEnabled = cr.Spec.Storage.Node.Enabled // 노드 설정 볼륨 사용 여부
+		stsParams.NodeConfPVC = cr.Spec.Storage.Node.ClaimTemplate     // 노드 설정 저장용 PVC 템플릿
 		if cr.Spec.Storage.VolumeMount.Volume != nil {
 			stsParams.AdditionalVolumes = cr.Spec.Storage.VolumeMount.Volume
 		}
@@ -278,11 +278,9 @@ func generateRedisClusterContainerParams(
 		containerProp.LivenessProbe = livenessProbeDef
 	}
 	// 데이터 영속성 활성화 여부
-	if cr.Spec.Storage != nil && cr.Spec.IsPersistenceEnabled() {
-		containerProp.PersistenceEnabled = true
-	} else {
-		containerProp.PersistenceEnabled = false
-	}
+	containerProp.DataPersistenceEnabled = cr.Spec.IsDataPersistenceEnabled()
+	// 노드 설정 영속성 활성화 여부
+	containerProp.NodePersistenceEnabled = cr.Spec.IsNodePersistenceEnabled()
 	// TLS 설정
 	if cr.Spec.TLS != nil {
 		containerProp.TLSConfig = &statefulset.TLSConfig{

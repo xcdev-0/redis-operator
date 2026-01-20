@@ -59,7 +59,8 @@ type ContainerParameters struct {
 	PasswordSecretKey  string                  // Secret 내 비밀번호 키 이름
 
 	// persistence
-	PersistenceEnabled bool // 데이터 영속성 활성화 여부
+	DataPersistenceEnabled bool // 데이터 영속성 활성화 여부
+	NodePersistenceEnabled bool // 노드 설정 영속성 활성화 여부
 
 	// tls & acl
 	TLSConfig *TLSConfig // TLS 설정
@@ -89,16 +90,16 @@ func (c *ContainerParameters) IsTLSEnabled() bool {
 // BuildEnvConfig는 ContainerParameters에서 envConfig를 생성합니다.
 func (c *ContainerParameters) GetEnvVars(envVars []corev1.EnvVar, clusterVersion *string) []corev1.EnvVar {
 	envConfig := envConfig{
-		role:               c.RedisSetupType,
-		enabledPassword:    c.EnabledPassword,
-		secretName:         c.PasswordSecretName,
-		secretKey:          c.PasswordSecretKey,
-		persistenceEnabled: c.PersistenceEnabled,
-		tlsConfig:          c.TLSConfig,
-		aclConfig:          c.ACLConfig,
-		envVars:            &envVars,
-		port:               c.Port,
-		clusterVersion:     clusterVersion,
+		role:                   c.RedisSetupType,
+		enabledPassword:        c.EnabledPassword,
+		secretName:             c.PasswordSecretName,
+		secretKey:              c.PasswordSecretKey,
+		dataPersistenceEnabled: c.DataPersistenceEnabled,
+		tlsConfig:              c.TLSConfig,
+		aclConfig:              c.ACLConfig,
+		envVars:                &envVars,
+		port:                   c.Port,
+		clusterVersion:         clusterVersion,
 	}
 	return getEnvironmentVariables(envConfig)
 }

@@ -42,13 +42,11 @@ func generateStatefulSetDef(
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
 					Containers: generateMainContainerDef(ContainerConfigParams{
-						ContainerName:         consts.MainContainerName,
-						EnableMetrics:         stsParams.EnableMetrics,
-						ContainerParams:       containerParams,
-						ClusterModeEnabled:    stsParams.ClusterModeEnabled,
-						NodeConfVolumeEnabled: stsParams.NodeConfVolumeEnabled,
-						ExternalConfig:        stsParams.ExternalConfig,
-						ClusterVersion:        stsParams.ClusterVersion,
+						ContainerName:   consts.MainContainerName,
+						EnableMetrics:   stsParams.EnableMetrics,
+						ContainerParams: containerParams,
+						ExternalConfig:  stsParams.ExternalConfig,
+						ClusterVersion:  stsParams.ClusterVersion,
 					}),
 
 					// Init Container에서 생성하는 설정 파일을 저장할 볼륨
@@ -106,9 +104,8 @@ func generateStatefulSetDef(
 	}
 
 	// 노드 설정 저장용 PVC 템플릿 설정
-	if containerParams.PersistenceEnabled &&
-		stsParams.ClusterModeEnabled &&
-		stsParams.NodeConfVolumeEnabled {
+	// 노드 영속성은 데이터 영속성과 함께 사용되어야 합니다
+	if containerParams.NodePersistenceEnabled {
 		statefulset.Spec.VolumeClaimTemplates = append(
 			statefulset.Spec.VolumeClaimTemplates,
 			createPVCTemplate(
@@ -118,7 +115,7 @@ func generateStatefulSetDef(
 	}
 
 	// 데이터 저장용 PVC 템플릿 설정
-	if containerParams.PersistenceEnabled {
+	if containerParams.DataPersistenceEnabled {
 		// TODO: 이름 설정
 		// pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, consts.DataVolumeName)
 		statefulset.Spec.VolumeClaimTemplates = append(
@@ -220,22 +217,19 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 }
 
 type ContainerConfigParams struct {
-	ContainerName         string
-	ExternalConfig        *string
-	ClusterModeEnabled    bool
-	NodeConfVolumeEnabled bool
-	ClusterVersion        *string
-	ContainerParams       ContainerParameters
-	EnableMetrics         bool
+	ContainerName   string
+	ContainerParams ContainerParameters
+	ExternalConfig  *string
+	ClusterVersion  *string
+	EnableMetrics   bool
 }
 
 func generateMainContainerDef(cfg ContainerConfigParams) []corev1.Container {
-	containerParams := cfg.ContainerParams
 	containerName := cfg.ContainerName
+	containerParams := cfg.ContainerParams
 	externalConfig := cfg.ExternalConfig
-	clusterModeEnabled := cfg.ClusterModeEnabled
-	nodeConfVolumeEnabled := cfg.NodeConfVolumeEnabled
 	clusterVersion := cfg.ClusterVersion
+	enableMetrics := cfg.EnableMetrics
 
 	// TLS 및 인증 활성화 여부 확인
 	enableTLS := containerParams.IsTLSEnabled()
@@ -246,9 +240,8 @@ func generateMainContainerDef(cfg ContainerConfigParams) []corev1.Container {
 		ContainerName:          containerName,
 		AdditionalVolumeMounts: containerParams.AdditionalVolumeMounts,
 		ExternalConfig:         externalConfig,
-		Persistence:            containerParams.PersistenceEnabled,
-		ClusterModeEnabled:     clusterModeEnabled,
-		NodeConfVolumeEnabled:  nodeConfVolumeEnabled,
+		DataPersistence:        containerParams.DataPersistenceEnabled,
+		NodePersistence:        containerParams.NodePersistenceEnabled,
 		TLS:                    containerParams.TLSConfig,
 		ACL:                    containerParams.ACLConfig,
 	})
@@ -301,7 +294,7 @@ func generateMainContainerDef(cfg ContainerConfigParams) []corev1.Container {
 	containers := []corev1.Container{redisContainer}
 
 	// Redis Exporter 메트릭 컨테이너 추가
-	if cfg.EnableMetrics {
+	if enableMetrics {
 		containers = append(containers, enableRedisMonitoring(containerParams))
 	}
 

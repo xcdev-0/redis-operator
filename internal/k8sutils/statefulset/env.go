@@ -84,16 +84,16 @@ func (a *ACLConfig) GetVolumeSource() *corev1.VolumeSource {
 }
 
 type envConfig struct {
-	role               string
-	enabledPassword    bool
-	secretName         string
-	secretKey          string
-	persistenceEnabled bool
-	tlsConfig          *TLSConfig
-	aclConfig          *ACLConfig
-	envVars            *[]corev1.EnvVar
-	port               *int
-	clusterVersion     *string
+	role                   string
+	enabledPassword        bool
+	secretName             string
+	secretKey              string
+	dataPersistenceEnabled bool
+	tlsConfig              *TLSConfig
+	aclConfig              *ACLConfig
+	envVars                *[]corev1.EnvVar
+	port                   *int
+	clusterVersion         *string
 }
 
 // getEnvironmentVariables는 Redis 컨테이너에 필요한 모든 환경 변수를 생성합니다.
@@ -158,8 +158,8 @@ func getEnvironmentVariables(cfg envConfig) []corev1.EnvVar {
 		})
 	}
 	// 데이터 영속성 활성화 여부
-	if cfg.persistenceEnabled {
-		envVars = append(envVars, corev1.EnvVar{Name: consts.PERSISTENCE_ENABLED, Value: "true"})
+	if cfg.dataPersistenceEnabled {
+		envVars = append(envVars, corev1.EnvVar{Name: consts.DATA_PERSISTENCE_ENABLED, Value: "true"})
 	}
 
 	// 추가 환경 변수 병합

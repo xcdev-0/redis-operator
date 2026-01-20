@@ -38,8 +38,8 @@ func generateNodeConfVolumeMount() corev1.VolumeMount {
 	}
 }
 
-// generatePersistenceVolumeMount는 데이터 영속성을 위한 PVC 볼륨 마운트를 생성합니다.
-func generatePersistenceVolumeMount() corev1.VolumeMount {
+// generateDataVolumeMount는 데이터 영속성을 위한 PVC 볼륨 마운트를 생성합니다.
+func generateDataVolumeMount() corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      consts.DataVolumeName,
 		MountPath: "/data",
@@ -90,9 +90,9 @@ func convertFromConfigmapToVolume(volumeName string, configMapName string) []cor
 type volumeMountParams struct {
 	ContainerName          string
 	AdditionalVolumeMounts []corev1.VolumeMount
-	Persistence            bool
+	DataPersistence        bool
+	NodePersistence        bool
 	ClusterModeEnabled     bool
-	NodeConfVolumeEnabled  bool
 	ExternalConfig         *string
 	TLS                    *TLSConfig
 	ACL                    *ACLConfig
@@ -123,13 +123,14 @@ func getVolumeMountForMainContainer(p volumeMountParams) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
 	// 클러스터 모드 + 노드 설정 볼륨
-	if p.ClusterModeEnabled && p.NodeConfVolumeEnabled && p.Persistence {
+	// 노드 영속성은 데이터 영속성과 함께 사용되어야 합니다
+	if p.NodePersistence {
 		mounts = append(mounts, generateNodeConfVolumeMount())
 	}
 
 	// 데이터 영속성 볼륨
-	if p.Persistence {
-		mounts = append(mounts, generatePersistenceVolumeMount())
+	if p.DataPersistence {
+		mounts = append(mounts, generateDataVolumeMount())
 	}
 
 	// TLS 인증서 볼륨
