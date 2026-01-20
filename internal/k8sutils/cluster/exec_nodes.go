@@ -165,9 +165,14 @@ func IsLeaderNode(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2
 }
 
 func checkRedisNodePresence(ctx context.Context, nodes []ClusterNode, podIP string) bool {
-	// clusterNode.Address -> ip:port@cport
+	// clusterNode.AddressAndHostName -> ip:port@cport 또는 ip:port@cport,hostname
+	// IPv4: "10.0.0.1:6379@16379" 또는 IPv6: "[2001:db8::1]:6379@16379"
 	for _, node := range nodes {
-		ip := strings.Split(node.Address, ":")[0]
+		ip, err := node.GetIP()
+		if err != nil {
+			log.FromContext(ctx).V(1).Error(err, "Failed to extract IP from node", "Node", node.AddressAndHostName)
+			continue
+		}
 		if ip == podIP {
 			return true
 		}

@@ -77,6 +77,10 @@ type ContainerParameters struct {
 	RedisExporterSecurityContext *corev1.SecurityContext      // Redis Exporter 보안 컨텍스트
 }
 
+func (c *ContainerParameters) IsAuthEnabled() bool {
+	return c.EnabledPassword
+}
+
 // IsTLSEnabled는 TLS가 활성화되어 있는지 확인합니다.
 func (c *ContainerParameters) IsTLSEnabled() bool {
 	return c.TLSConfig != nil

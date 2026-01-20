@@ -167,6 +167,17 @@ type RedisCluster struct {
 	Status RedisClusterStatus `json:"status,omitempty,omitzero"`
 }
 
+// GetRedisDynamicConfig returns Redis dynamic configuration parameters.
+// Priority: top-level config > leader config > follower config
+func (cr *RedisClusterSpec) GetRedisDynamicConfig() []string {
+	// Use top-level configuration if available
+	if cr.RedisConfig != nil && len(cr.RedisConfig.DynamicConfig) > 0 {
+		return cr.RedisConfig.DynamicConfig
+	}
+	// Return empty slice if no configuration is found
+	return []string{}
+}
+
 func (cr *RedisClusterSpec) GetLeaderReplicaCount() int32 {
 	if cr.RedisLeader.ReplicaCount != nil {
 		return *cr.RedisLeader.ReplicaCount

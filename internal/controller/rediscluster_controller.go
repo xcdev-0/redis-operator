@@ -47,7 +47,7 @@ type RedisClusterReconciler struct {
 	client.Client
 	*statefulset.StatefulSetService
 	K8sClient kubernetes.Interface
-	Healer    redisservice.Healer
+	Healer    *redisservice.Healer
 	Recorder  record.EventRecorder
 }
 
@@ -379,7 +379,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Empty Master는 클러스터에 포함되어 있지만 슬롯이 없는 노드입니다 (스케일 아웃 후 발생할 수 있음).
 	if cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, "") == desiredTotalReplicas {
 		// Empty Master가 발견되면 자동으로 재밸런싱하여 슬롯을 분배합니다.
-		cluster.CheckIfEmptyMasters(ctx, r.K8sClient, cr)
+		cluster.RebalanceIfEmptyMasterExists(ctx, r.K8sClient, cr)
 	}
 
 	// ========================================================================
@@ -387,7 +387,11 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// ========================================================================
 	// 모든 Leader와 Follower가 준비되었고, 아직 Ready 상태가 아니면 Ready로 전환합니다.
 	// 이미 Ready 상태인 경우 불필요한 상태 업데이트를 방지하기 위해 건너뜁니다.
-	if cr.Status.ReadyLeaderReplicas == desiredLeaderReplicas && cr.Status.ReadyFollowerReplicas == desiredFollwerReplicas && cr.Status.State != rcvb2.RedisClusterReady {
+	// Initializing 상태에서는 Bootstrap을 거쳐야 하므로 Ready로 전환하지 않습니다.
+	if cr.Status.ReadyLeaderReplicas == desiredLeaderReplicas &&
+		cr.Status.ReadyFollowerReplicas == desiredFollwerReplicas &&
+		cr.Status.State != rcvb2.RedisClusterReady &&
+		cr.Status.State != rcvb2.RedisClusterInitializing {
 		// 먼저 클러스터가 비정상 상태라고 가정하고 메트릭을 0으로 설정합니다.
 
 		// 클러스터 상태를 확인합니다 (redis-cli --cluster check 명령 사용).
@@ -423,9 +427,8 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 이렇게 하면 Service Selector가 올바르게 작동하여 각 역할의 Pod를 정확히 선택할 수 있습니다.
 	cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr)
 
-	// 클러스터 초기화 작업이 진행 중이므로 60초 후에 다시 reconcile합니다.
-	// 이 시간 동안 노드가 클러스터에 추가되고 안정화됩니다.
-	return intctrlutil.RequeueAfter(ctx, time.Second*60, "Redis cluster count is not desired", "Current.Count", nc, "Desired.Count", desiredTotalReplicas)
+	// 정상 상태에서도 주기적으로 reconcile하여 클러스터 상태를 모니터링합니다.
+	return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
 }
 
 func (r *RedisClusterReconciler) updateStatus(ctx context.Context, rc *rcvb2.RedisCluster, status rcvb2.RedisClusterStatus) (requeue bool, err error) {

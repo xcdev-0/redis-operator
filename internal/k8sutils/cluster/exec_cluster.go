@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
+	"github.com/avast/retry-go"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"k8s.io/client-go/kubernetes"
@@ -429,10 +432,6 @@ func RemoveRedisFollowerNodesFromCluster(ctx context.Context, k8sclient kubernet
 	}
 }
 
-func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
-	return nil
-}
-
 // redis-cli cluster failover
 func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instance *rcvb2.RedisCluster, slavePodName string) error {
 	cmd := RedisInvocation{
@@ -443,16 +442,189 @@ func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instan
 	if err != nil {
 		return err
 	}
-	log.FromContext(ctx, "Cluster failover completed", "Pod", slavePodName)
+	log.FromContext(ctx).Info("Cluster failover completed", "Pod", slavePodName)
 	return nil
 }
 
 func RepairDisconnectedMasters(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+	executionPodName := GetExecutionPodName(cr.Name)
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
+	defer redisClient.Close()
+
+	nodes, err := GetClusterNodes(ctx, redisClient)
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if !node.IsLeader() {
+			continue
+		}
+		if !node.IsFailedOrDisconnected() {
+			continue
+		}
+
+		ip, err := node.GetIP()
+		if err != nil {
+			log.FromContext(ctx).V(1).Error(err, "Failed to get IP from node address. Continuing with other nodes.", "Node", node.AddressAndHostName)
+			continue
+		}
+
+		err = redisClient.ClusterMeet(ctx, ip, strconv.Itoa(*cr.Spec.ClientPort)).Err()
+		if err != nil {
+			log.FromContext(ctx).V(1).Error(err, "Failed to execute CLUSTER MEET on node. Continuing with other nodes.", "Node", node.NodeID, "IP", ip)
+			continue
+		}
+		log.FromContext(ctx).V(1).Info("Successfully executed CLUSTER MEET", "Node", node.NodeID, "IP", ip)
+	}
 	return nil
 }
-func CheckIfEmptyMasters(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
-	return nil
+
+// redisConfig:
+//
+//	dynamicConfig:
+//	  - "maxmemory-policy allkeys-lru"      # ✅ 가능
+//	  - "slowlog-log-slower-than 5000"      # ✅ 가능
+//	  - "timeout 300"                        # ✅ 가능
+//	  - "maxmemory 1gb"                      # ✅ 가능
+func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+	dynamicConfig := cr.Spec.GetRedisDynamicConfig()
+	if len(dynamicConfig) == 0 {
+		return nil
+	}
+
+	// Apply configuration to all pods
+	applyToPods := func(role string, count int32) error {
+		for i := 0; i < int(count); i++ {
+			podName := GetPodName(cr.Name, role, i)
+			redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, podName)
+			defer redisClient.Close()
+
+			pong, err := redisClient.Ping(ctx).Result()
+			if err != nil || pong != "PONG" {
+				log.FromContext(ctx).V(1).Info("Redis instance not accessible", "pod", podName, "error", err)
+				continue
+			}
+
+			for _, config := range dynamicConfig {
+				parts := strings.SplitN(config, " ", 2)
+				if len(parts) != 2 {
+					log.FromContext(ctx).Error(nil, "Invalid config format", "config", config, "pod", podName)
+					continue
+				}
+
+				if err := redisClient.ConfigSet(ctx, parts[0], parts[1]).Err(); err != nil {
+					log.FromContext(ctx).Error(err, "Failed to set config", "key", parts[0], "value", parts[1], "pod", podName)
+					return err
+				}
+				log.FromContext(ctx).V(1).Info("Successfully set config", "key", parts[0], "value", parts[1], "pod", podName)
+			}
+		}
+		return nil
+	}
+
+	if err := applyToPods("leader", cr.Spec.GetLeaderReplicaCount()); err != nil {
+		return err
+	}
+	return applyToPods("follower", cr.Spec.GetFollowerReplicaCount())
 }
+
+func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) {
+	totalRedisLeaderNodes := GetClusterLeaderNodeCount(ctx, client, cr)
+
+	executionPodName := GetExecutionPodName(cr.Name)
+	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
+	defer redisClient.Close()
+
+	for i := 0; i < int(totalRedisLeaderNodes); i++ {
+		pod := redisservice.RedisDetails{
+			PodName:   GetPodName(cr.Name, "leader", i),
+			Namespace: cr.Namespace,
+		}
+
+		podNodeID := getRedisNodeID(ctx, client, cr, pod)
+
+		podSlots, err := getClusterSlotByNodeID(ctx, redisClient, podNodeID)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "failed to get cluster slots")
+			continue
+		}
+
+		if podSlots == "0" || podSlots == "" {
+			log.FromContext(ctx).V(1).Info("Found Empty Redis Leader Node", "pod", pod)
+			RebalanceRedisClusterEmptyMasters(ctx, client, cr)
+			break
+		}
+	}
+}
+
 func RedisClusterStatusHealth(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) bool {
+	logger := log.FromContext(ctx)
+	leaderReplicas := cr.Spec.GetLeaderReplicaCount()
+
+	// Try to check cluster health from multiple leader nodes with retry logic
+	var lastErr error
+	for i := 0; i < int(leaderReplicas); i++ {
+		executionPodName := GetPodName(cr.Name, "leader", i)
+
+		// Retry logic with exponential backoff for each node
+		err := retry.Do(
+			func() error {
+				return checkClusterHealth(ctx, client, cr, executionPodName)
+			},
+			retry.Attempts(3),
+			retry.Delay(500*time.Millisecond),
+			retry.DelayType(retry.BackOffDelay),
+			retry.OnRetry(func(n uint, err error) {
+				logger.V(1).Info("Retrying cluster health check", "pod", executionPodName, "attempt", n+1, "error", err)
+			}),
+		)
+
+		if err == nil {
+			// Successfully verified cluster health from this node
+			logger.V(1).Info("Cluster health check passed", "pod", executionPodName)
+			return true
+		}
+
+		lastErr = err
+		logger.V(1).Info("Cluster health check failed from node", "pod", executionPodName, "error", err)
+	}
+
+	// All nodes failed the health check
+	if lastErr != nil {
+		logger.Error(lastErr, "Cluster health check failed from all leader nodes")
+	}
 	return false
+}
+
+func checkClusterHealth(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) error {
+	logger := log.FromContext(ctx)
+
+	cmd := RedisInvocation{
+		Command: []string{
+			"redis-cli", "--cluster", "check",
+			fmt.Sprintf("127.0.0.1:%d", *cr.Spec.ClientPort)},
+	}
+	cmd.AddAuthAndTLS(ctx, client, cr)
+
+	out, err := redisservice.ExecuteCommandInPodWithResult(ctx, client, cr, cmd.Args(), podName)
+	if err != nil {
+		return fmt.Errorf("failed to execute cluster check command: %w", err)
+	}
+
+	// Check for the expected success indicators
+	// [OK] xxx keys in xxx masters.
+	// [OK] All nodes agree about slots configuration.
+	// [OK] All 16384 slots covered.
+	okCount := strings.Count(out, "[OK]")
+	if okCount != 3 {
+		logger.V(1).Info("Cluster health check output", "pod", podName, "okCount", okCount, "output", out)
+		return fmt.Errorf("cluster health check failed: expected 3 [OK] messages, got %d", okCount)
+	}
+
+	// Additional check: ensure no [ERR] or [WARNING] in critical lines
+	if strings.Contains(out, "[ERR]") {
+		return fmt.Errorf("cluster health check found errors in output")
+	}
+
+	return nil
 }

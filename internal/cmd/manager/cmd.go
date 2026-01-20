@@ -9,7 +9,7 @@ import (
 	redisclustercontroller "github.com/xcdev-0/redis-operator/internal/controller"
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisutils"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	"github.com/xcdev-0/redis-operator/internal/scheme"
 	"k8s.io/client-go/kubernetes"
@@ -204,7 +204,7 @@ func setupControllers(mgr ctrl.Manager, k8sClient kubernetes.Interface, maxConcu
 
 	// Healer는 Pod의 역할(role) 라벨을 동기화하는 유틸리티입니다.
 	// 여러 Controller에서 공유하여 사용합니다.
-	healer := redisutils.NewHealer(k8sClient)
+	healer := redisservice.NewHealer(k8sClient)
 
 	if err := (&redisclustercontroller.RedisClusterReconciler{
 		Client:             mgr.GetClient(),                               // CRD 읽기/쓰기용

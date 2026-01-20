@@ -23,9 +23,14 @@ const (
 )
 
 const (
+	MainContainerName = "redis"
+)
+
+const (
 	ConfigVolumeName         = "config"
 	ExternalConfigVolumeName = "external-config"
 	NodeConfVolumeName       = "node-conf"
+	DataVolumeName           = "data-persistence" // 데이터 영속성 볼륨 이름
 	TLSCertsVolumeName       = "tls-certs"
 	ACLSecretVolumeName      = "acl-secret"
 	ACLPVCVolumeName         = "acl-pvc"

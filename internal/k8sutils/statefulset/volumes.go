@@ -3,7 +3,6 @@ package statefulset
 import (
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -40,9 +39,9 @@ func generateNodeConfVolumeMount() corev1.VolumeMount {
 }
 
 // generatePersistenceVolumeMount는 데이터 영속성을 위한 PVC 볼륨 마운트를 생성합니다.
-func generatePersistenceVolumeMount(name string) corev1.VolumeMount {
+func generatePersistenceVolumeMount() corev1.VolumeMount {
 	return corev1.VolumeMount{
-		Name:      util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, name),
+		Name:      consts.DataVolumeName,
 		MountPath: "/data",
 	}
 }
@@ -89,7 +88,7 @@ func convertFromConfigmapToVolume(volumeName string, configMapName string) []cor
 }
 
 type volumeMountParams struct {
-	Name                   string
+	ContainerName          string
 	AdditionalVolumeMounts []corev1.VolumeMount
 	Persistence            bool
 	ClusterModeEnabled     bool
@@ -99,24 +98,24 @@ type volumeMountParams struct {
 	ACL                    *ACLConfig
 }
 
-// getVolumeMountForUserInitContainer는 User Init Container용 볼륨 마운트를 생성합니다.
-// Init Container는 기본 설정 볼륨과 선택적으로 데이터 볼륨만 필요합니다.
-func getVolumeMountForUserInitContainer(name string, persistence bool, additional []corev1.VolumeMount) []corev1.VolumeMount {
-	var mounts []corev1.VolumeMount
+// // getVolumeMountForUserInitContainer는 User Init Container용 볼륨 마운트를 생성합니다.
+// // Init Container는 기본 설정 볼륨과 선택적으로 데이터 볼륨만 필요합니다.
+// func getVolumeMountForUserInitContainer(name string, persistence bool, additional []corev1.VolumeMount) []corev1.VolumeMount {
+// 	var mounts []corev1.VolumeMount
 
-	// 데이터 영속성 볼륨 (선택적)
-	if persistence {
-		mounts = append(mounts, generatePersistenceVolumeMount(name))
-	}
+// 	// 데이터 영속성 볼륨 (선택적)
+// 	if persistence {
+// 		mounts = append(mounts, generatePersistenceVolumeMount(name))
+// 	}
 
-	// 기본 설정 볼륨 (항상 포함)
-	mounts = append(mounts, generateConfigVolumeMount())
+// 	// 기본 설정 볼륨 (항상 포함)
+// 	mounts = append(mounts, generateConfigVolumeMount())
 
-	// 추가 볼륨 마운트
-	mounts = append(mounts, additional...)
+// 	// 추가 볼륨 마운트
+// 	mounts = append(mounts, additional...)
 
-	return mounts
-}
+// 	return mounts
+// }
 
 // getVolumeMountForMainContainer는 Redis 메인 컨테이너용 볼륨 마운트를 생성합니다.
 // 메인 컨테이너는 모든 볼륨 타입이 필요할 수 있습니다.
@@ -130,7 +129,7 @@ func getVolumeMountForMainContainer(p volumeMountParams) []corev1.VolumeMount {
 
 	// 데이터 영속성 볼륨
 	if p.Persistence {
-		mounts = append(mounts, generatePersistenceVolumeMount(p.Name))
+		mounts = append(mounts, generatePersistenceVolumeMount())
 	}
 
 	// TLS 인증서 볼륨
@@ -144,11 +143,13 @@ func getVolumeMountForMainContainer(p volumeMountParams) []corev1.VolumeMount {
 	}
 
 	// 외부 설정 볼륨 (유저가 제공한 컨피그맵)
+	// volumename: external-config, mountPath: /etc/redis/external.conf.d
 	if p.ExternalConfig != nil {
 		mounts = append(mounts, generateExternalConfigVolumeMount())
 	}
 
 	// 기본 설정 볼륨 (항상 포함)
+	// volumename: config, mountPath: /etc/redis
 	mounts = append(mounts, generateConfigVolumeMount())
 
 	// 추가 볼륨 마운트
@@ -179,12 +180,6 @@ func getVolumeMountForExporter(tls *TLSConfig, acl *ACLConfig, additional []core
 	mounts = append(mounts, additional...)
 
 	return mounts
-}
-
-// getVolumeMount는 기존 호환성을 위해 유지하지만, 내부적으로 getVolumeMountForMainContainer를 사용합니다.
-// Deprecated: 사용처별 전용 함수를 사용하는 것을 권장합니다.
-func getVolumeMount(p volumeMountParams) []corev1.VolumeMount {
-	return getVolumeMountForMainContainer(p)
 }
 
 func createPVCTemplate(volumeName string, objectMeta metav1.ObjectMeta, pvc corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Showmax/go-fqdn"
@@ -59,16 +60,17 @@ func applyCluster(cfg *agentutil.Config,
 		cfg.Append("cluster-announce-ip", clusterAnnounceIP)
 	}
 
-	// Redis v7 이상에서는 호스트명도 지원합니다 (FQDN)
+	// cluster-announce-hostname: Redis 클러스터 노드가 호스트명을 사용하도록 설정
+	// - Redis v7+: 공식 지원
+	// - Redis v6+: 지원되지만 일부 버전에서는 동작하지 않을 수 있음
+	// - Redis v5 이하: 지원하지 않음 (설정해도 무시됨)
 	// 호스트명을 사용하면 IP가 변경되어도 클러스터가 안정적으로 동작할 수 있어요!
-	if redisMajorVersion == "v7" {
-		fqdnName, err := fqdn.FqdnHostname() // FQDN (Fully Qualified Domain Name) 가져오기
-		if err != nil {
-			log.Printf("Warning: Failed to get FQDN: %v", err)
-		} else {
-			// 클러스터 노드들이 서로 통신할 때 사용할 호스트명
-			cfg.Append("cluster-announce-hostname", fqdnName)
-		}
+	fqdnName, err := fqdn.FqdnHostname() // FQDN (Fully Qualified Domain Name) 가져오기
+	if err != nil {
+		log.Printf("Warning: Failed to get FQDN: %v", err)
+	} else {
+		// 클러스터 노드들이 서로 통신할 때 사용할 호스트명
+		cfg.Append("cluster-announce-hostname", fqdnName)
 	}
 
 	nodeConfPath := filepath.Join(nodeConfDir, "nodes.conf")
@@ -199,12 +201,39 @@ func applyMemory(cfg *agentutil.Config) {
 }
 
 // applyExternalConfig는 외부 설정 파일 포함 설정을 적용합니다.
-// 사용자가 추가로 정의한 설정 파일을 포함합니다.
-// 이 파일은 ConfigMap이나 Secret으로 마운트할 수 있어요!
+// 사용자가 추가로 정의한 설정 파일들을 포함합니다.
+// 이 파일들은 ConfigMap이나 Secret으로 마운트할 수 있어요!
+// 디렉토리의 모든 .conf 파일을 자동으로 include하며, 파일명 순서대로 처리됩니다.
 // 주의: 이 설정은 마지막에 추가되므로, 기본 설정을 덮어쓸 수 있습니다.
-func applyExternalConfig(cfg *agentutil.Config, externalConfigFile string) {
-	if _, err := os.Stat(externalConfigFile); err == nil {
-		cfg.Append("include", externalConfigFile)
+func applyExternalConfig(cfg *agentutil.Config, externalConfigDir string) {
+	// 디렉토리 존재 여부 확인
+	if _, err := os.Stat(externalConfigDir); os.IsNotExist(err) {
+		fmt.Printf("External config directory not found: %s\n", externalConfigDir)
+		return
+	}
+
+	// 디렉토리의 모든 .conf 파일 찾기
+	pattern := filepath.Join(externalConfigDir, "*.conf")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		log.Printf("Warning: Failed to list external config files in %s: %v", externalConfigDir, err)
+		return
+	}
+
+	// 파일이 없으면 메시지 출력
+	if len(files) == 0 {
+		fmt.Printf("No .conf files found in %s\n", externalConfigDir)
+		return
+	}
+
+	// 파일명 순서대로 정렬 (01-, 02- 같은 접두사로 순서 제어 가능)
+	sort.Strings(files)
+
+	// 모든 .conf 파일 include
+	fmt.Printf("Loading external config files from %s:\n", externalConfigDir)
+	for _, file := range files {
+		fmt.Printf("  - %s\n", filepath.Base(file))
+		cfg.Append("include", file)
 	}
 }
 
@@ -213,15 +242,13 @@ func applyExternalConfig(cfg *agentutil.Config, externalConfigFile string) {
 func GenerateConfig() error {
 	cfg := agentutil.NewConfig("/etc/redis/redis.conf", defaultRedisConfig)
 	var (
-		persistenceEnabled = util.CoalesceEnv1(consts.PERSISTENCE_ENABLED, "false")                                        // 데이터 영속화 활성화 여부
-		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                                                        // Redis 데이터 저장 디렉토리
-		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")                                              // 클러스터 nodes.conf 파일 위치
-		externalConfigFile = util.CoalesceEnv1("EXTERNAL_CONFIG_FILE", "/etc/redis/external.conf.d/redis-additional.conf") // 사용자 정의 설정 파일
-		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")                                           // Redis 메이저 버전 (v6 또는 v7)
-		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")                                                  // Redis 포트 번호
-		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                                                        // NodePort 모드 사용 여부 (Kubernetes Service 타입)
-		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")                                                   // TLS 암호화 활성화 여부
-		// clusterMode        = util.CoalesceEnv1(consts.EnvRedisSetupMode, "cluster")                                        // Redis 모드: "standalone" 또는 "cluster"
+		persistenceEnabled = util.CoalesceEnv1(consts.PERSISTENCE_ENABLED, "false") // 데이터 영속화 활성화 여부
+		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                 // Redis 데이터 저장 디렉토리
+		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")       // 클러스터 nodes.conf 파일 위치
+		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")    // Redis 메이저 버전 (v6 또는 v7)
+		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")           // Redis 포트 번호
+		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                 // NodePort 모드 사용 여부 (Kubernetes Service 타입)
+		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")            // TLS 암호화 활성화 여부
 	)
 
 	applyAuth(cfg)
@@ -232,7 +259,7 @@ func GenerateConfig() error {
 	applyPort(cfg, tlsMode, redisPort)
 	applyNodePort(cfg, nodeport, tlsMode)
 	applyMemory(cfg)
-	applyExternalConfig(cfg, externalConfigFile)
+	applyExternalConfig(cfg, "/etc/redis/external.conf.d")
 
 	return cfg.Commit()
 }
