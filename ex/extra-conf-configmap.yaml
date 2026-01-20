@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-extra-config
+  namespace: default
+data:
+  # ✅ 이제 아무 .conf 파일이나 추가 가능!
+  01-memory.conf: |
+    maxmemory 512mb
+    maxmemory-policy allkeys-lru
+  
+  02-security.conf: |
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    rename-command CONFIG ""
+  
+  03-performance.conf: |
+    tcp-backlog 1024
+    tcp-keepalive 60
+  
+  # 순서 없이도 가능!
+  custom-settings.conf: |
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
