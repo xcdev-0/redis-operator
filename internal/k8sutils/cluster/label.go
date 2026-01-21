@@ -1,4 +1,4 @@
-package cluster
+package k8smeta
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/cluster"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -22,14 +22,14 @@ func UpdateRedisRoleLabels(
 	cr *rcvb2.RedisCluster,
 ) error {
 	for _, stsRole := range []string{"leader", "follower"} {
-		labels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
-			STSName:          GetStatefulSetName(cr.Name, stsRole),
+		labels := GetRedisClusterLabels(&RedisLabels{
+			STSName:          cluster.GetStatefulSetName(cr.Name, stsRole),
 			Role:             stsRole,
 			AdditionalLabels: cr.GetLabels(),
 			ClusterName:      cr.Name,
 		})
 		// 안정적인 라벨만 사용 (StatefulSet selector와 일관성 유지)
-		stableLabels := k8smeta.GetRedisClusterStableLabels(labels)
+		stableLabels := GetRedisClusterStableLabels(labels)
 
 		selector := make([]string, 0, len(stableLabels))
 		for key, value := range stableLabels {
@@ -68,7 +68,7 @@ func updateRedisRoleLabel(
 	// 다르다면 실제 역할로 레이블 업데이트
 	// redis-current-role: master/slave
 	for _, pod := range pods.Items {
-		isMaster, err := IsLeaderNode(ctx, k8sclient, cr, pod.Name)
+		isMaster, err := cluster.IsLeaderNode(ctx, k8sclient, cr, pod.Name)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "failed to check redis role, skipping pod", "pod", pod.Name)
 			continue
