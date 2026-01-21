@@ -81,7 +81,7 @@ func generateMainContainerDef(cfg ContainerConfigParams) []corev1.Container {
 
 	// Redis Exporter 메트릭 컨테이너 추가
 	if enableMetrics {
-		containers = append(containers, enableRedisMonitoring(containerParams))
+		containers = append(containers, addRedisMonitoringContainer(containerParams))
 	}
 
 	return containers
@@ -119,21 +119,15 @@ func getProbeInfo(probe *corev1.Probe, enableTLS, enableAuth bool) *corev1.Probe
 	return probe
 }
 
-// enableRedisMonitoring은 Redis Exporter 사이드카 컨테이너를 생성합니다.
+// addRedisMonitoringContainer은 Redis Exporter 사이드카 컨테이너를 생성합니다.
 // 이 컨테이너는 Redis 메트릭을 수집하여 Prometheus에 노출합니다.
-func enableRedisMonitoring(p ContainerParameters) corev1.Container {
+func addRedisMonitoringContainer(p ContainerParameters) corev1.Container {
 	exporterDefinition := corev1.Container{
 		Name:            consts.RedisExporterContainer,
 		Image:           p.RedisExporterImage,
 		ImagePullPolicy: p.RedisExporterImagePullPolicy,
 		Env:             p.getExporterEnvironmentVariables(),
-		// TLS 인증서 볼륨은 마운트하지만, 데이터 PVC는 마운트하지 않습니다.
-		// Exporter는 Redis에 연결만 하면 되므로 데이터 볼륨이 필요 없습니다.
-		VolumeMounts: getVolumeMountForExporter(
-			p.TLSConfig,
-			p.ACLConfig,
-			p.AdditionalVolumeMounts,
-		),
+		VolumeMounts:    p.getExporterVolumeMount(),
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          consts.RedisExporterPortName,

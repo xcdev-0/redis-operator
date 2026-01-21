@@ -36,7 +36,6 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	redisclusterv1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/cluster"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -47,17 +46,23 @@ type RedisClusterReconciler struct {
 	client.Client
 	*statefulset.StatefulSetService
 	K8sClient kubernetes.Interface
-	Healer    *redisservice.Healer
 	Recorder  record.EventRecorder
 }
 
 const (
-	RedisClusterFinalizer = "redis.ejlabs.in/finalizer"
+	RedisClusterFinalizer = "ejlabs.in/finalizer"
 )
 
-// +kubebuilder:rbac:groups=rediscluster.ejlabs.in,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rediscluster.ejlabs.in,resources=redisclusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=rediscluster.ejlabs.in,resources=redisclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -332,7 +337,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// 연결이 끊긴 Master 노드를 복구 시도합니다.
 		// 네트워크 문제나 일시적인 장애로 인해 노드가 클러스터에서 분리되었을 수 있습니다.
 		logger.Info("healthy leader count does not match desired; attempting to repair disconnected masters")
-		if err = cluster.RepairDisconnectedMasters(ctx, r.K8sClient, cr); err != nil {
+		if err = cluster.RepairDisconnectedNodes(ctx, r.K8sClient, cr); err != nil {
 			logger.Error(err, "failed to repair disconnected masters")
 		}
 

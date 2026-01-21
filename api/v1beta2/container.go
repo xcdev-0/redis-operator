@@ -1,6 +1,9 @@
 package v1beta2
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
+	corev1 "k8s.io/api/core/v1"
+)
 
 // +k8s:deepcopy-gen=true
 type Sidecar struct {
@@ -25,4 +28,15 @@ type RedisExporter struct {
 	ImagePullPolicy corev1.PullPolicy            `json:"imagePullPolicy,omitempty"`
 	EnvVars         *[]corev1.EnvVar             `json:"env,omitempty"`
 	SecurityContext *corev1.SecurityContext      `json:"securityContext,omitempty"`
+}
+
+func (re *RedisExporter) GetPort() int {
+	if re.Port != nil {
+		return *re.Port
+	}
+	return consts.RedisExporterPort
+}
+
+func (re *RedisExporter) IsEnabled() bool {
+	return re.Enabled
 }

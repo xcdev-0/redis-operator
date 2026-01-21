@@ -6,11 +6,9 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
-	"github.com/xcdev-0/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -20,12 +18,11 @@ type RedisClusterService struct {
 }
 
 func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	serviceName := GetServiceName(cr.Name, rcs.role)
+	stsName := GetStatefulSetName(cr.Name, rcs.role)
 	var epp k8smeta.ExporterPortProvider
-	if cr.Spec.RedisExporter != nil {
+	if cr.Spec.RedisExporter.IsEnabled() {
 		epp = func() (port int, enable bool) {
-			defaultP := ptr.To(consts.RedisExporterPort)
-			return *util.Coalesce(cr.Spec.RedisExporter.Port, defaultP), cr.Spec.RedisExporter.Enabled
+			return cr.Spec.RedisExporter.GetPort(), cr.Spec.RedisExporter.IsEnabled()
 		}
 	} else {
 		epp = k8smeta.DisableMetrics
@@ -33,14 +30,14 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 
 	// 1. cluster ip, headless, additional service 생성
 	labels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
-		STSName:          GetStatefulSetName(cr.Name, rcs.role),
+		STSName:          stsName,
 		Role:             rcs.role,
 		AdditionalLabels: cr.Labels,
 		ClusterName:      cr.Name,
 	})
 
 	objectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
-		Name:        serviceName,
+		Name:        stsName,
 		Namespace:   cr.Namespace,
 		Labels:      labels,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, epp),
@@ -80,7 +77,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 
 	// 2. headless service
 	headlessObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
-		Name:        serviceName + "-headless",
+		Name:        stsName + "-headless",
 		Namespace:   cr.Namespace,
 		Labels:      labels,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, epp),
@@ -108,7 +105,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 
 	// 3. additional service
 	additionalObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
-		Name:        serviceName + "-additional",
+		Name:        stsName + "-additional",
 		Namespace:   cr.Namespace,
 		Labels:      labels,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.GetServiceAnnotations(), epp),

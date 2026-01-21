@@ -22,7 +22,7 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the redisutils itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- rediscluster_admin_role.yaml
-- rediscluster_editor_role.yaml
-- rediscluster_viewer_role.yaml
+#- rediscluster_admin_role.yaml
+#- rediscluster_editor_role.yaml
+#- rediscluster_viewer_role.yaml
 

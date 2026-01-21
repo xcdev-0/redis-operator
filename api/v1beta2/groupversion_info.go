@@ -16,11 +16,11 @@ limitations under the License.
 
 // Package v1beta2 contains API Schema definitions for the cluster v1beta2 API group.
 // +kubebuilder:object:generate=true
-// +groupName=rediscluster.ejlabs.in
+// +groupName=ejlabs.in
 
 // NOTE: +groupName 주석은 controller-gen이 'make manifests' 실행 시 CRD YAML 파일을 생성할 때 사용됩니다.
 // 이 값이 CRD의 spec.group 필드가 되며, apiVersion의 group 부분을 결정합니다.
-// 예: apiVersion: rediscluster.ejlabs.in/v1beta2
+// 예: apiVersion: ejlabs.in/v1beta2
 
 package v1beta2
 
@@ -33,7 +33,7 @@ var (
 	// GroupVersion은 Operator 런타임에 사용되는 API Group과 Version을 정의합니다.
 	// Operator가 Kubernetes API 서버와 통신하여 RedisCluster 리소스를 조회/생성/수정할 때 이 값을 사용합니다.
 	// 이 값은 +groupName 주석과 반드시 일치해야 합니다.
-	GroupVersion = schema.GroupVersion{Group: "rediscluster.ejlabs.in", Version: "v1beta2"}
+	GroupVersion = schema.GroupVersion{Group: "ejlabs.in", Version: "v1beta2"}
 
 	// SchemeBuilder는 이 API Group의 타입들을 Kubernetes Scheme에 등록하는 데 사용됩니다.
 	// Scheme은 GVK(GroupVersionKind)와 Go 타입 간의 매핑 정보를 담고 있으며,

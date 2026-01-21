@@ -8,12 +8,6 @@ func GetStatefulSetName(clusterName, role string) string {
 	return clusterName + "-" + role
 }
 
-// 예: GetServiceName("clustername", "leader") ->
-// "clustername-leader"
-func GetServiceName(clusterName, role string) string {
-	return clusterName + "-" + role
-}
-
 // 예: GetNodePortServiceName("clustername", "leader", 0) ->
 // "clustername-leader-0"
 func GetNodePortServiceName(clusterName, role string, index int) string {

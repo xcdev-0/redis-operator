@@ -47,7 +47,7 @@ func generateStatefulSetDef(
 
 					// Init Container에서 생성하는 설정 파일을 저장할 볼륨
 					Volumes: []corev1.Volume{
-						generateEmptyVolume(consts.VolumeNameConfig)},
+						NewConfigVolumeConfig().Volume},
 
 					// Init Container 설정
 					InitContainers: generateInitContainerDef(InitContainerConfig{
@@ -64,9 +64,10 @@ func generateStatefulSetDef(
 
 	// 외부 ConfigMap이 있는 경우, 볼륨에 추가 -> init container에서 사용
 	if stsParams.ExternalConfig != nil {
+		volumeConfig := NewExternalConfigVolumeConfig(*stsParams.ExternalConfig)
 		statefulset.Spec.Template.Spec.Volumes = append(
 			statefulset.Spec.Template.Spec.Volumes,
-			convertFromConfigmapToVolume(consts.VolumeNameExternalConfig, *stsParams.ExternalConfig)...)
+			volumeConfig.Volume)
 	}
 
 	// 추가 볼륨 추가
@@ -75,28 +76,17 @@ func generateStatefulSetDef(
 	}
 
 	// TLS 인증서 볼륨 추가
-	if containerParams.IsTLSEnabled() {
-		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
-			corev1.Volume{
-				Name: consts.VolumeNameTLSCerts,
-				VolumeSource: corev1.VolumeSource{
-					Secret: &containerParams.TLSConfig.Secret,
-				},
-			})
+	if tlsConfig := NewTLSVolumeConfig(containerParams.TLSConfig); tlsConfig != nil {
+		statefulset.Spec.Template.Spec.Volumes = append(
+			statefulset.Spec.Template.Spec.Volumes,
+			tlsConfig.Volume)
 	}
 
 	// ACL 설정 볼륨 추가 (Secret 또는 PVC)
-	// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
-	if containerParams.ACLConfig != nil {
-		volumeName := containerParams.ACLConfig.GetVolumeName()
-		volumeSource := containerParams.ACLConfig.GetVolumeSource()
-		if volumeName != "" && volumeSource != nil {
-			statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes,
-				corev1.Volume{
-					Name:         volumeName,
-					VolumeSource: *volumeSource,
-				})
-		}
+	if aclConfig := NewACLVolumeConfig(containerParams.ACLConfig); aclConfig != nil {
+		statefulset.Spec.Template.Spec.Volumes = append(
+			statefulset.Spec.Template.Spec.Volumes,
+			aclConfig.Volume)
 	}
 
 	// 노드 설정 저장용 PVC 템플릿 설정
@@ -138,4 +128,33 @@ func generateStatefulSetDef(
 	k8smeta.AddOwnerRefToObject(statefulset, ownerDef)
 
 	return statefulset
+}
+func createPVCTemplate(volumeName string, objectMeta metav1.ObjectMeta, pvc corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {
+	pvcTemplate := pvc // 복사후 필요한 필드만 설정
+
+	// 템플릿이므로 생성 시간 초기화
+	pvcTemplate.CreationTimestamp = metav1.Time{}
+	// 볼륨 이름 설정
+	pvcTemplate.Name = volumeName
+	// StatefulSet과 동일한 라벨
+	pvcTemplate.Labels = objectMeta.GetLabels()
+	// StatefulSet과 동일한 어노테이션
+	pvcTemplate.Annotations = k8smeta.GenerateStatefulSetsAnots(objectMeta, nil)
+	// AccessMode가 지정되지 않으면 기본값으로 ReadWriteOnce 사용
+	if pvc.Spec.AccessModes == nil {
+		pvcTemplate.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+	} else {
+		pvcTemplate.Spec.AccessModes = pvc.Spec.AccessModes
+	}
+	// VolumeMode 설정 (Filesystem 또는 Block)
+	pvcVolumeMode := corev1.PersistentVolumeFilesystem
+	if pvc.Spec.VolumeMode != nil {
+		pvcVolumeMode = *pvc.Spec.VolumeMode
+	}
+	pvcTemplate.Spec.VolumeMode = &pvcVolumeMode
+	// 스토리지 크기
+	pvcTemplate.Spec.Resources = pvc.Spec.Resources
+	// 특정 PV 선택용
+	pvcTemplate.Spec.Selector = pvc.Spec.Selector
+	return pvcTemplate
 }

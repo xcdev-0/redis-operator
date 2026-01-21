@@ -72,3 +72,9 @@ func GetRedisClusterStableLabels(givenLabels map[string]string) map[string]strin
 	}
 	return stableLabels
 }
+
+func GetPVCSelectorLabels(stsName string) map[string]string {
+	return map[string]string{
+		consts.LabelKeyApp: stsName,
+	}
+}

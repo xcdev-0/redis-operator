@@ -82,33 +82,33 @@ func (c *ContainerParameters) GetEnvVars(envVars []corev1.EnvVar, clusterVersion
 func (c *ContainerParameters) GetVolumeMounts(containerName string, externalConfig *string) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 
-	// 노드 설정 영속성 볼륨
+	// 노드 설정 영속성 볼륨 (PVC)
 	if c.NodePersistenceEnabled {
-		mounts = append(mounts, generateNodeConfVolumeMount())
+		mounts = append(mounts, NewNodeConfVolumeMount())
 	}
 
-	// 데이터 영속성 볼륨
+	// 데이터 영속성 볼륨 (PVC)
 	if c.DataPersistenceEnabled {
-		mounts = append(mounts, generateDataVolumeMount())
+		mounts = append(mounts, NewDataVolumeMount())
 	}
 
 	// TLS 인증서 볼륨
-	if c.TLSConfig != nil {
-		mounts = append(mounts, generateTLSVolumeMount())
+	if tlsConfig := NewTLSVolumeConfig(c.TLSConfig); tlsConfig != nil {
+		mounts = append(mounts, tlsConfig.VolumeMount)
 	}
 
 	// ACL 설정 볼륨
-	if aclMount := generateACLVolumeMount(c.ACLConfig); aclMount != nil {
-		mounts = append(mounts, *aclMount)
+	if aclConfig := NewACLVolumeConfig(c.ACLConfig); aclConfig != nil {
+		mounts = append(mounts, aclConfig.VolumeMount)
 	}
 
 	// 외부 설정 볼륨 (유저가 제공한 컨피그맵)
 	if externalConfig != nil {
-		mounts = append(mounts, generateExternalConfigVolumeMount())
+		mounts = append(mounts, NewExternalConfigVolumeConfig(*externalConfig).VolumeMount)
 	}
 
 	// 기본 설정 볼륨 (항상 포함)
-	mounts = append(mounts, generateConfigVolumeMount())
+	mounts = append(mounts, NewConfigVolumeConfig().VolumeMount)
 
 	// 추가 볼륨 마운트
 	mounts = append(mounts, c.AdditionalVolumeMounts...)
@@ -185,4 +185,23 @@ func (c *ContainerParameters) getExporterEnvironmentVariables() []corev1.EnvVar 
 		return envVars[i].Name < envVars[j].Name
 	})
 	return envVars
+}
+
+func (c *ContainerParameters) getExporterVolumeMount() []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+
+	// TLS 인증서 볼륨
+	if tlsConfig := NewTLSVolumeConfig(c.TLSConfig); tlsConfig != nil {
+		mounts = append(mounts, tlsConfig.VolumeMount)
+	}
+
+	// ACL 설정 볼륨
+	if aclConfig := NewACLVolumeConfig(c.ACLConfig); aclConfig != nil {
+		mounts = append(mounts, aclConfig.VolumeMount)
+	}
+
+	// 추가 볼륨 마운트
+	mounts = append(mounts, c.AdditionalVolumeMounts...)
+
+	return mounts
 }

@@ -49,14 +49,14 @@ func generateInitContainerDef(cfg InitContainerConfig) []corev1.Container {
 	// 볼륨 마운트 구성: 기본 설정 파일 볼륨
 	// name: config, mountPath: /etc/redis (기본 설정 파일 볼륨)
 	volumeMounts := []corev1.VolumeMount{
-		generateConfigVolumeMount(),
+		NewConfigVolumeConfig().VolumeMount,
 	}
 
 	// 외부 ConfigMap이 제공된 경우 추가 볼륨 마운트
 	// name: external-config, mountPath: /etc/redis/external.conf.d
 	if externalConfig != nil {
 		volumeMounts = append(volumeMounts,
-			generateExternalConfigVolumeMount())
+			NewExternalConfigVolumeConfig(*externalConfig).VolumeMount)
 	}
 
 	// Init Config Container 생성 (Redis 설정 파일 생성용)

@@ -138,12 +138,19 @@ func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, c
 		return 0, err
 	}
 	count := 0
+	logger := log.FromContext(ctx)
 	for _, node := range clusterNodes {
-		if node.IsFailedOrDisconnected() {
+		isFailed := node.IsFailedOrDisconnected()
+		logger.V(1).Info("Checking node status",
+			"NodeID", node.NodeID,
+			"Flags", node.Flags,
+			"State", node.State,
+			"IsFailedOrDisconnected", isFailed)
+		if isFailed {
 			count++
 		}
 	}
-	log.FromContext(ctx).V(1).Info("Number of failed nodes in cluster", "Failed Node Count", count)
+	logger.V(1).Info("Number of failed nodes in cluster", "Failed Node Count", count)
 	return int32(count), nil
 }
 

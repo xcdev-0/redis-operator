@@ -1,4 +1,4 @@
-apiVersion: rediscluster.ejlabs.in/v1beta2
+apiVersion: ejlabs.in/v1beta2
 kind: RedisCluster
 metadata:
   name: test-redis-cluster
@@ -8,9 +8,16 @@ spec:
   clusterVersion: v7
   
   storage:
+    additionalVolumeAndMounts:
+      volumes:
+        - name: test-volume
+          emptyDir: {}
+      volumeMounts:
+        - name: test-volume
+          mountPath: /test-volume
     node:
       enabled: true
-      claimTemplate:
+      volumeClaimTemplate:
         spec:
           accessModes: ["ReadWriteOnce"]
           resources:
@@ -43,3 +50,21 @@ spec:
       limits:
         cpu: 100m
         memory: 128Mi
+  
+  # Redis Exporter 설정 (Prometheus 메트릭 수집)
+  redisExporter:
+    enabled: true
+    image: oliver006/redis_exporter:latest
+    imagePullPolicy: IfNotPresent
+    port: 9121  # 기본 포트 (생략 가능)
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    # 추가 환경변수 (선택사항)
+    # envVars:
+    #   - name: REDIS_EXPORTER_LOG_LEVEL
+    #     value: "info"

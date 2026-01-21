@@ -15,7 +15,7 @@ func finalizeRedisClusterPVC(ctx context.Context, ctrlclient client.Client, cr *
 func HandleRedisClusterFinalizer(ctx context.Context, ctrlclient client.Client, cr *rcvb2.RedisCluster, finalizer string) error {
 	if cr.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(cr, finalizer) {
-			if cr.Spec.Storage != nil && !cr.Spec.Storage.KeepAfterDelete {
+			if cr.Spec.Storage != nil && !cr.Spec.Storage.Data.KeepAfterDelete {
 				if err := finalizeRedisClusterPVC(ctx, ctrlclient, cr); err != nil {
 					return err
 				}

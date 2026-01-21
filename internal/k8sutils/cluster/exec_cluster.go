@@ -10,6 +10,7 @@ import (
 	"github.com/avast/retry-go"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -446,37 +447,77 @@ func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instan
 	return nil
 }
 
-func RepairDisconnectedMasters(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
+	logger := log.FromContext(ctx)
 	executionPodName := GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
 
-	nodes, err := GetClusterNodes(ctx, redisClient)
-	if err != nil {
-		return err
-	}
-	for _, node := range nodes {
-		if !node.IsLeader() {
-			continue
-		}
-		if !node.IsFailedOrDisconnected() {
-			continue
+	// 참고: Redis 7.x에서 cluster-announce-hostname은 노드 정보 표시용이며,
+	// CLUSTER MEET 명령어는 여전히 IP 주소만 지원합니다.
+	// 따라서 항상 Pod IP 방식을 사용합니다.
+
+	port := strconv.Itoa(*cr.Spec.ClientPort)
+
+	{
+		// 모든 StatefulSet Pod IP로 일괄 MEET
+		logger.V(1).Info("Using Pod IP-based CLUSTER MEET for all StatefulSet Pods")
+
+		// leader와 follower StatefulSet의 모든 Pod IP 수집
+		allPodIPs := []string{}
+		leaderReplicas := cr.Spec.GetLeaderReplicaCount()
+		followerReplicas := cr.Spec.GetFollowerReplicaCount()
+
+		// Leader Pod IPs
+		for i := 0; i < int(leaderReplicas); i++ {
+			podName := GetPodName(cr.Name, "leader", i)
+			podIP, err := getPodIP(ctx, client, cr.Namespace, podName)
+			if err != nil {
+				logger.V(1).Error(err, "Failed to get Pod IP", "Pod", podName)
+				continue
+			}
+			if podIP != "" {
+				allPodIPs = append(allPodIPs, podIP)
+			}
 		}
 
-		ip, err := node.GetIP()
-		if err != nil {
-			log.FromContext(ctx).V(1).Error(err, "Failed to get IP from node address. Continuing with other nodes.", "Node", node.AddressAndHostName)
-			continue
+		// Follower Pod IPs
+		for i := 0; i < int(followerReplicas); i++ {
+			podName := GetPodName(cr.Name, "follower", i)
+			podIP, err := getPodIP(ctx, client, cr.Namespace, podName)
+			if err != nil {
+				logger.V(1).Error(err, "Failed to get Pod IP", "Pod", podName)
+				continue
+			}
+			if podIP != "" {
+				allPodIPs = append(allPodIPs, podIP)
+			}
 		}
 
-		err = redisClient.ClusterMeet(ctx, ip, strconv.Itoa(*cr.Spec.ClientPort)).Err()
-		if err != nil {
-			log.FromContext(ctx).V(1).Error(err, "Failed to execute CLUSTER MEET on node. Continuing with other nodes.", "Node", node.NodeID, "IP", ip)
-			continue
+		// 모든 Pod IP에 대해 CLUSTER MEET 시도
+		// - 이미 연결된 노드는 무시됨 (안전)
+		// - IP가 바뀐 노드는 주소 업데이트
+		// - 새 노드는 추가
+		for _, podIP := range allPodIPs {
+			err := redisClient.ClusterMeet(ctx, podIP, port).Err()
+			if err != nil {
+				logger.V(1).Error(err, "Failed to execute CLUSTER MEET", "IP", podIP)
+				continue
+			}
+			logger.V(1).Info("Successfully executed CLUSTER MEET", "IP", podIP)
 		}
-		log.FromContext(ctx).V(1).Info("Successfully executed CLUSTER MEET", "Node", node.NodeID, "IP", ip)
 	}
+
 	return nil
+}
+
+// getPodIP는 특정 Pod의 현재 IP 주소를 조회합니다.
+func getPodIP(ctx context.Context, client kubernetes.Interface, namespace, podName string) (string, error) {
+	pod, err := client.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return pod.Status.PodIP, nil
 }
 
 // redisConfig:

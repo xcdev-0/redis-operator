@@ -88,10 +88,11 @@ func (node *ClusterNode) IsFollower() bool {
 	return node.HasFlagType("slave")
 }
 func (node *ClusterNode) IsFailed() bool {
-	return node.HasFlagType("fail")
+	// "fail" 또는 "fail?" (PFAIL) 모두 감지
+	return node.HasFlagType("fail") || strings.Contains(node.Flags, "fail?")
 }
 func (node *ClusterNode) IsFailedOrDisconnected() bool {
-	return node.HasFlagType("fail") || node.HasFlagType("disconnected")
+	return node.IsFailed() || node.HasFlagType("disconnected")
 }
 
 // GetIP는 ClusterNode의 AddressAndHostName에서 IP를 추출합니다.
@@ -130,6 +131,20 @@ func (node *ClusterNode) GetIP() (string, error) {
 	}
 
 	return host, nil
+}
+
+// GetHostname은 ClusterNode의 AddressAndHostName에서 호스트네임을 추출합니다.
+//   - 호스트네임이 있는 경우 (Redis v7+ with cluster-announce-hostname):
+//     "10.0.0.1:6379@16379,redis-cluster-leader-0.svc.cluster.local" → "redis-cluster-leader-0.svc.cluster.local"
+//   - 호스트네임이 없는 경우:
+//     "10.0.0.1:6379@16379" → ""
+func (node *ClusterNode) GetHostname() string {
+	parts := strings.Split(node.AddressAndHostName, ",")
+	if len(parts) < 2 {
+		return "" // 호스트네임 없음
+	}
+	hostname := strings.TrimSpace(parts[1])
+	return hostname
 }
 
 // ex: master,myself,fail
