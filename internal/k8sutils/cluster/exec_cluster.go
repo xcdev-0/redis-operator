@@ -265,7 +265,7 @@ func AddAllSlotsToSingleNode(ctx context.Context, k8sClient kubernetes.Interface
 }
 
 // redis-cli --cluster create <endpoint>... --cluster-yes
-func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
+func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (string, error) {
 	executePodName := GetExecutionPodName(cr.Name)
 	cmd := RedisInvocation{
 		Command: []string{"redis-cli", "--cluster", "create"},
@@ -285,12 +285,12 @@ func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr 
 	}
 	cmd.AddFlags([]string{"--cluster-yes"})
 	cmd.AddAuthAndTLS(ctx, k8sClient, cr)
-	redisservice.ExecuteCommandInPod(ctx, k8sClient, cr, cmd.Args(), executePodName)
+	return redisservice.ExecuteCommandInPodWithResult(ctx, k8sClient, cr, cmd.Args(), executePodName)
 }
 
 // redis-cli --cluster add-node <new-node-endpoint> <existing-node-endpoint>
 func AddRedisLeaderNodeToCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	activeRedisNode := GetClusterLeaderNodeCount(ctx, k8sClient, cr)
+	activeRedisNode := GetClusterMasterNodeCount(ctx, k8sClient, cr)
 	newPodDetails := redisservice.RedisDetails{
 		PodName:   GetPodName(cr.Name, "leader", int(activeRedisNode)),
 		Namespace: cr.Namespace,
@@ -341,6 +341,7 @@ func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.In
 				PodName:   GetPodName(cr.Name, "follower", followerIdx),
 				Namespace: cr.Namespace,
 			}
+			// 리더3 팔로워4 일 때: 0->0, 1->1, 2->2, 3->0, 4->1 ...
 			leaderPod := redisservice.RedisDetails{
 				PodName:   GetPodName(cr.Name, "leader", (followerIdx)%int(leaderCounts)),
 				Namespace: cr.Namespace,
@@ -350,6 +351,7 @@ func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.In
 				log.FromContext(ctx).Error(err, "Failed to get endpoint IP for follower pod", "Pod", followerPod.PodName)
 				continue
 			}
+			// TODO: ERROR fqdn일때는 무조건 존재하지 않게됨
 			if !checkRedisNodePresence(ctx, nodes, followerEndpointIP) {
 				log.FromContext(ctx).V(1).Info("Adding node to cluster.", "Node.IP", followerEndpointIP, "Follower.Pod", followerPod)
 
@@ -570,7 +572,7 @@ func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interfa
 }
 
 func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	totalRedisLeaderNodes := GetClusterLeaderNodeCount(ctx, client, cr)
+	totalRedisLeaderNodes := GetClusterMasterNodeCount(ctx, client, cr)
 
 	executionPodName := GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)

@@ -18,7 +18,7 @@ func generateStatefulSetDef(
 ) *appsv1.StatefulSet {
 
 	selectorLabels := &metav1.LabelSelector{
-		MatchLabels: k8smeta.GetRedisClusterStableLabels(objectMeta.GetLabels())}
+		MatchLabels: k8smeta.GetRedisClusterStableLabelsFromLabels(objectMeta.GetLabels())}
 
 	statefulset := &appsv1.StatefulSet{
 		TypeMeta:   k8smeta.GenerateTypeMeta("StatefulSet", "apps/v1"),

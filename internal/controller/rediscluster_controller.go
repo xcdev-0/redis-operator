@@ -58,7 +58,7 @@ const (
 // +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -106,7 +106,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 		// 실제 Redis 클러스터에 있는 Leader 노드 수를 확인합니다.
 		// StatefulSet의 리플리카 수와 실제 클러스터의 노드 수가 일치해야 다운스케일을 진행합니다.
-		if clusterLeaderNodeCount := cluster.GetClusterLeaderNodeCount(ctx, r.K8sClient, cr); clusterLeaderNodeCount == currentLeaderReplicas {
+		if clusterLeaderNodeCount := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr); clusterLeaderNodeCount == currentLeaderReplicas {
 			// Kubernetes Event를 기록하여 다운스케일 시작을 알립니다.
 			r.Recorder.Event(cr, corev1.EventTypeNormal, rcvb2.EventReasonRedisClusterDownscale, "Redis cluster is downscaling...")
 			logger.Info("Redis cluster is downscaling...", "Current.LeaderReplicas", currentLeaderReplicas, "Desired.LeaderReplicas", desiredLeaderReplicas)
@@ -281,14 +281,20 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// ================================================
 	// 5. 클러스터 초기화
 	// ================================================
+	// 목표 leader, follower 수에 맞게 클러스터를 초기화합니다.
 	if nc := cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, ""); nc != desiredTotalReplicas {
 		logger.Info("Creating redis cluster by executing cluster creation commands")
 		// 실제로 레디스 클러스터내에서 마스터 역할을 하는 개수
-		currentLeaderCount := cluster.GetClusterLeaderNodeCount(ctx, r.K8sClient, cr)
+		currentLeaderCount := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
 		if currentLeaderCount != desiredLeaderReplicas {
 			logger.Info("Not all leader are part of the cluster...", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas)
 			if currentLeaderCount <= 2 {
-				cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
+				result, err := cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
+				if err != nil {
+					logger.Error(err, "failed to create redis cluster")
+					// return intctrlutil.RequeueE(ctx, err, "failed to create redis cluster")
+				}
+				logger.Info("Redis cluster creation result", "Result", result)
 			} else {
 				if currentLeaderCount < desiredLeaderReplicas {
 					// Scale up the cluster
@@ -309,6 +315,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return intctrlutil.RequeueAfter(ctx, time.Second*60, "Redis cluster count is not desired", "Current.Count", nc, "Desired.Count", desiredTotalReplicas)
 	}
 
+	// leader follower 모두 준비되었으면 클러스터 상태를 확인합니다.
 	// ================================================
 	// 6. 클러스터 상태 확인
 	// ================================================

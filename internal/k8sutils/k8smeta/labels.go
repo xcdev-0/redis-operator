@@ -63,14 +63,19 @@ func GetRedisClusterLabels(rl *RedisLabels) map[string]string {
 
 // GetRedisClusterStableLabels는 주어진 라벨 맵에서 안정적인 라벨만 추출합니다.
 // StatefulSet selector와 일관성을 유지하기 위해 사용됩니다.
-func GetRedisClusterStableLabels(givenLabels map[string]string) map[string]string {
-	stableLabels := make(map[string]string, len(StableLabelKeys))
-	for _, key := range StableLabelKeys {
-		if value, exists := givenLabels[key]; exists {
-			stableLabels[key] = value
-		}
+func GetRedisClusterStableLabels(stsName string, role string, clusterName string) map[string]string {
+	return map[string]string{
+		consts.LabelKeyApp:     stsName,
+		consts.LabelKeyRole:    role,
+		consts.LabelKeyCluster: clusterName,
 	}
-	return stableLabels
+}
+func GetRedisClusterStableLabelsFromLabels(labels map[string]string) map[string]string {
+	return map[string]string{
+		consts.LabelKeyApp:     labels[consts.LabelKeyApp],
+		consts.LabelKeyRole:    labels[consts.LabelKeyRole],
+		consts.LabelKeyCluster: labels[consts.LabelKeyCluster],
+	}
 }
 
 func GetPVCSelectorLabels(stsName string) map[string]string {

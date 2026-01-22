@@ -1,0 +1,82 @@
+apiVersion: ejlabs.in/v1beta2
+kind: RedisCluster
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"ejlabs.in/v1beta2","kind":"RedisCluster","metadata":{"annotations":{},"name":"test-redis-cluster","namespace":"default"},"spec":{"clusterSize":3,"clusterVersion":"v7","kubernetesConfig":{"image":"redis:7.2-alpine","imagePullPolicy":"IfNotPresent","resources":{"limits":{"cpu":"100m","memory":"128Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}},"redisExporter":{"enabled":true,"image":"oliver006/redis_exporter:latest","imagePullPolicy":"IfNotPresent","port":9121,"resources":{"limits":{"cpu":"100m","memory":"128Mi"},"requests":{"cpu":"50m","memory":"64Mi"}}},"redisFollower":{"redisConfig":{},"replicaCount":3},"redisLeader":{"redisConfig":{},"replicaCount":3},"storage":{"additionalVolumeAndMounts":{"volumeMounts":[{"mountPath":"/test-volume","name":"test-volume"}],"volumes":[{"emptyDir":{},"name":"test-volume"}]},"data":{"enabled":true,"volumeClaimTemplate":{"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"1Gi"}}}}},"node":{"enabled":true,"volumeClaimTemplate":{"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"100Mi"}}}}}}}}
+  creationTimestamp: "2026-01-22T01:20:09Z"
+  finalizers:
+  - ejlabs.in/finalizer
+  generation: 2
+  name: test-redis-cluster
+  namespace: default
+  resourceVersion: "42079"
+  uid: 5aacc80c-bf0e-4ea0-bafd-55247b9c9dcb
+spec:
+  clientPort: 6379
+  clusterSize: 3
+  clusterVersion: v7
+  kubernetesConfig:
+    image: redis:7.2-alpine
+    imagePullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    updateStrategy: {}
+  redisExporter:
+    enabled: true
+    image: oliver006/redis_exporter:latest
+    imagePullPolicy: IfNotPresent
+    port: 9121
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  redisFollower:
+    redisConfig: {}
+    replicaCount: 3
+  redisLeader:
+    redisConfig: {}
+    replicaCount: 3
+  storage:
+    additionalVolumeAndMounts:
+      volumeMounts:
+      - mountPath: /test-volume
+        name: test-volume
+      volumes:
+      - emptyDir: {}
+        name: test-volume
+    data:
+      enabled: true
+      volumeClaimTemplate:
+        metadata: {}
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+        status: {}
+    node:
+      enabled: true
+      volumeClaimTemplate:
+        metadata: {}
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 100Mi
+        status: {}
+status:
+  readyFollowerReplicas: 3
+  readyLeaderReplicas: 3
+  reason: RedisCluster is ready
+  state: Ready

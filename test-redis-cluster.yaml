@@ -33,7 +33,7 @@ spec:
               storage: 1Gi
   
   redisLeader:
-    replicaCount: 3
+    replicaCount: 2
     redisConfig: {}
   
   redisFollower:

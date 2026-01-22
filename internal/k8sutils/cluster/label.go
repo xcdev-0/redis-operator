@@ -22,28 +22,26 @@ func UpdateRedisRoleLabels(
 	cr *rcvb2.RedisCluster,
 ) error {
 	log.FromContext(ctx).Info("Starting UpdateRedisRoleLabels", "cluster", cr.Name)
-	
+
 	for _, stsRole := range []string{"leader", "follower"} {
 		log.FromContext(ctx).V(1).Info("Processing role", "role", stsRole)
-		
-		labels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
-			STSName:          GetStatefulSetName(cr.Name, stsRole),
-			Role:             stsRole,
-			AdditionalLabels: cr.GetLabels(),
-			ClusterName:      cr.Name,
-		})
+
 		// 안정적인 라벨만 사용 (StatefulSet selector와 일관성 유지)
-		stableLabels := k8smeta.GetRedisClusterStableLabels(labels)
+		stableLabels := k8smeta.GetRedisClusterStableLabels(
+			GetStatefulSetName(cr.Name, stsRole),
+			stsRole,
+			cr.Name,
+		)
 
 		selector := pkglabels.Set(stableLabels).String()
 		log.FromContext(ctx).V(1).Info("Using selector", "selector", selector, "role", stsRole)
-		
+
 		if err := updateRedisRoleLabel(ctx, k8sclient, cr, selector); err != nil {
 			log.FromContext(ctx).Error(err, "Failed to update redis role labels", "role", stsRole)
 			return err
 		}
 	}
-	
+
 	log.FromContext(ctx).Info("Completed UpdateRedisRoleLabels", "cluster", cr.Name)
 	return nil
 }
@@ -80,30 +78,30 @@ func updateRedisRoleLabel(
 	// redis-current-role: master/slave
 	for _, pod := range pods.Items {
 		log.FromContext(ctx).V(1).Info("Checking pod role", "pod", pod.Name)
-		
+
 		isMaster, err := IsLeaderNode(ctx, k8sclient, cr, pod.Name)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "failed to check redis role, skipping pod", "pod", pod.Name)
 			continue
 		}
-		
+
 		newRole := consts.LabelValueSlave
 		if isMaster {
 			newRole = consts.LabelValueMaster
 		}
-		
-		log.FromContext(ctx).V(1).Info("Pod role determined", 
-			"pod", pod.Name, 
+
+		log.FromContext(ctx).V(1).Info("Pod role determined",
+			"pod", pod.Name,
 			"isMaster", isMaster,
 			"newRole", newRole)
-		
+
 		oldRole := pod.Labels[consts.LabelKeyCurrentRole]
-		
-		log.FromContext(ctx).V(1).Info("Comparing roles", 
+
+		log.FromContext(ctx).V(1).Info("Comparing roles",
 			"pod", pod.Name,
-			"oldRole", oldRole, 
+			"oldRole", oldRole,
 			"newRole", newRole)
-		
+
 		if oldRole != newRole {
 			// JSON Patch를 사용하여 Pod 라벨 업데이트
 			// 레이블이 이미 존재하면 "replace", 없으면 "add" 사용
@@ -111,19 +109,19 @@ func updateRedisRoleLabel(
 			if oldRole != "" {
 				op = "replace"
 			}
-			
+
 			log.FromContext(ctx).Info("Updating pod role label",
 				"pod", pod.Name,
 				"operation", op,
 				"oldRole", oldRole,
 				"newRole", newRole)
-			
+
 			patch := []byte(
 				fmt.Sprintf(`[{"op": "%s", "path": "/metadata/labels/%s", "value": "%s"}]`,
 					op, consts.LabelKeyCurrentRole, newRole))
-			
+
 			log.FromContext(ctx).V(1).Info("Patch command", "pod", pod.Name, "patch", string(patch))
-			
+
 			rErr := retry.RetryOnConflict(retry.DefaultRetry, patchFunc(pod.Name, patch))
 			if rErr != nil {
 				log.FromContext(ctx).Error(rErr, "Failed to patch pod", "pod", pod.Name)
@@ -135,7 +133,7 @@ func updateRedisRoleLabel(
 				"newRole", newRole,
 			)
 		} else {
-			log.FromContext(ctx).V(1).Info("Skipping pod, role unchanged", 
+			log.FromContext(ctx).V(1).Info("Skipping pod, role unchanged",
 				"pod", pod.Name,
 				"role", newRole)
 		}
