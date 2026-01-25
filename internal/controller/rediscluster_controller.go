@@ -24,6 +24,7 @@ import (
 
 	"github.com/avast/retry-go"
 	intctrlutil "github.com/xcdev-0/redis-operator/internal/controllerutil"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -95,8 +96,10 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	desiredTotalReplicas := desiredLeaderReplicas + desiredFollwerReplicas
 
 	// ================================================
-	// 1. downscale
+	// 1. scale in
 	// ================================================
+	// 첫번째로 실행하는 이유는 슬롯 이동 → follower 제거 → rebalance 같은 절차를 강제하기 위함
+	// 다운스케일 로직 진행하지 않고 아래 2,3 스텝에서 sts 팟을 제거하면 위험!!
 	if currentLeaderReplicas := r.GetStatefulSetReplicas(ctx, cr.Namespace, cr.Name+"-leader"); desiredLeaderReplicas < currentLeaderReplicas {
 		// StatefulSet이 아직 준비되지 않았으면 다운스케일을 수행하지 않습니다.
 		// 안정적인 상태에서만 다운스케일을 진행해야 합니다.
@@ -121,7 +124,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// 중요: Kubernetes의 "leader" StatefulSet에 속한 Pod라도, 실제 Redis Cluster에서는
 				// 자동 failover, Pod 재시작, 네트워크 분할 등으로 인해 replica(slave) 역할을 하고 있을 수 있습니다.
 				// 슬롯을 이동하려면 해당 노드가 master 역할을 해야 하므로, 실제 역할을 확인합니다.
-				podName := cluster.GetPodName(cr.Name, "leader", int(ordinal))
+				podName := k8smeta.GetPodName(cr.Name, "leader", int(ordinal))
 				isLeader, err := cluster.IsLeaderNode(ctx, r.K8sClient, cr, podName)
 				if err != nil {
 					logger.Error(err, "failed to check if pod is leader")
@@ -172,10 +175,10 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if (cr.Status.ReadyLeaderReplicas == 0 && cr.Status.ReadyFollowerReplicas == 0) ||
 		cr.Status.ReadyLeaderReplicas != desiredLeaderReplicas {
 		recueue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
-			ReadyLeaderReplicas:   cr.Status.ReadyLeaderReplicas,
-			ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas,
 			State:                 rcvb2.RedisClusterInitializing,
 			Reason:                rcvb2.InitializingClusterLeaderReason,
+			ReadyLeaderReplicas:   cr.Status.ReadyLeaderReplicas,
+			ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas,
 		})
 		if err != nil {
 			return intctrlutil.RequeueE(ctx, err, "failed to update status")
@@ -202,6 +205,9 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 	return intctrlutil.RequeueE(ctx, err, "")
 	// }
 
+	// leader 팟들이 모두 준비완료 되었을때 실행해야함. 준비되지 않았을 때 실행하면
+	// replication 명령이 실패하거나
+	// follower가 붙을 master를 못 찾을 수 잇움
 	if r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-leader") {
 		// Leader StatefulSet은 Ready이지만 CR Status는 아직 업데이트되지 않은 상태
 		if (cr.Status.ReadyLeaderReplicas == 0 && cr.Status.ReadyFollowerReplicas == 0) ||
@@ -209,8 +215,8 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
 				State:                 rcvb2.RedisClusterInitializing,
 				Reason:                rcvb2.InitializingClusterFollowerReason,
-				ReadyLeaderReplicas:   cr.Status.ReadyLeaderReplicas,
-				ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas,
+				ReadyLeaderReplicas:   desiredLeaderReplicas,           // leader는 준비완료
+				ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas, // follower는 아직...
 			})
 			if err != nil {
 				return intctrlutil.RequeueE(ctx, err, "")
@@ -246,13 +252,13 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// ================================================
 	// 3. bootstrap
 	// ================================================
-	// statefulset pod들이 준비되었지만 status가 업데이트되지 않은 경우
+	// statefulset pod들이 준비되었고 cr.status가 업데이트해야 합니다
 	if cr.Status.ReadyLeaderReplicas != desiredLeaderReplicas || cr.Status.ReadyFollowerReplicas != desiredFollwerReplicas {
 		requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
 			State:                 rcvb2.RedisClusterBootstrap,
 			Reason:                rcvb2.BootstrapClusterReason,
 			ReadyLeaderReplicas:   desiredLeaderReplicas,
-			ReadyFollowerReplicas: desiredFollwerReplicas,
+			ReadyFollowerReplicas: desiredFollwerReplicas, //팔로워들도 준비 완료 !
 		})
 		if err != nil {
 			return intctrlutil.RequeueE(ctx, err, "")
@@ -263,7 +269,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// ================================================
-	// 4. 단일 노드일 때 leader-0 노드에 모든 슬롯 할당
+	// 4. 단일 노드일 때 leader-0 노드에 모든 슬롯 할당 (테스트용)
 	// ================================================
 	// 아직 클러스터 안에 포함되지는 않음
 	if desiredLeaderReplicas == 1 {
@@ -278,6 +284,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
+	// 어드미션 웹훅으로 리더 노드 최소 1개 또는 최소 3개이상으로 강제할거임
 	// ================================================
 	// 5. 클러스터 초기화
 	// ================================================

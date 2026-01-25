@@ -19,6 +19,7 @@ import (
 type ServiceOptions struct {
 	Namespace            string                       // Kubernetes namespace where the service will be created
 	ServiceObjectMeta    metav1.ObjectMeta            // Service metadata (name, labels, annotations)
+	SelectorLabels       map[string]string            // Selector labels for the service
 	OwnerRef             metav1.OwnerReference        // Owner reference for garbage collection
 	ExporterPortProvider k8smeta.ExporterPortProvider // Function to get Redis exporter port if enabled
 	Headless             bool                         // Whether to create a headless service (ClusterIP: None)
@@ -35,10 +36,10 @@ func generateServiceDef(opts ServiceOptions) *corev1.Service {
 		Spec: corev1.ServiceSpec{
 			Type:      generateServiceType(opts.ServiceType),
 			ClusterIP: "", // Empty string means Kubernetes will assign a ClusterIP
-			Selector:  utilmaps.Copy(opts.ServiceObjectMeta.GetLabels()),
+			Selector:  utilmaps.Copy(opts.SelectorLabels),
 			Ports: []corev1.ServicePort{
 				{
-					Name:       consts.RedisClientPortName,
+					Name:       consts.RedisClientPortName, // redis-client
 					Port:       int32(opts.ClientPort),
 					TargetPort: intstr.FromInt(opts.ClientPort),
 					Protocol:   corev1.ProtocolTCP,
@@ -124,6 +125,17 @@ func getService(ctx context.Context, k8sClient kubernetes.Interface, namespace s
 	}
 	log.FromContext(ctx).V(1).Info("Redis service get action is successful")
 	return serviceInfo, nil
+}
+
+// getServicePortByName returns the ServicePort with the specified name
+// Returns nil if not found
+func getServicePortByName(svc *corev1.Service, portName string) *corev1.ServicePort {
+	for i := range svc.Spec.Ports {
+		if svc.Spec.Ports[i].Name == portName {
+			return &svc.Spec.Ports[i]
+		}
+	}
+	return nil
 }
 
 func createOrUpdateService(ctx context.Context, opts ServiceOptions) error {

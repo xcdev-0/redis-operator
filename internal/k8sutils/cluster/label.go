@@ -28,7 +28,7 @@ func UpdateRedisRoleLabels(
 
 		// 안정적인 라벨만 사용 (StatefulSet selector와 일관성 유지)
 		stableLabels := k8smeta.GetRedisClusterStableLabels(
-			GetStatefulSetName(cr.Name, stsRole),
+			k8smeta.GetStatefulSetName(cr.Name, stsRole),
 			stsRole,
 			cr.Name,
 		)

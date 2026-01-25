@@ -39,14 +39,12 @@ func executeCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 	)
 	config, err := k8smeta.GenerateK8sConfig()()
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Could not find pod to execute")
 		return "", err
 	}
 
 	// Pod 정보 가져오기
 	pod, err := client.CoreV1().Pods(cr.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Could not find pod to execute")
 		return "", err
 	}
 
@@ -60,7 +58,6 @@ func executeCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 	}
 	if targetContainer < 0 {
 		err := fmt.Errorf("redis container not found in pod %s", podName)
-		log.FromContext(ctx).Error(err, "Could not find redis container")
 		return "", err
 	}
 
@@ -75,11 +72,9 @@ func executeCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 
 	// 디버깅: URL 확인
 	execURL := req.URL()
-	log.FromContext(ctx).Info("Exec request URL", "url", execURL.String())
 
 	exec, err := remotecommand.NewSPDYExecutor(config, "POST", execURL)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to init executor")
 		return "", err
 	}
 

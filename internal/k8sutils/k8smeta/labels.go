@@ -45,8 +45,8 @@ type RedisLabels struct {
 // 주의: app과 role은 StatefulSet 이름과 역할이므로 실제 클러스터 내 역할을 나타내지 않습니다.
 func GetCurrentMasterSelectorLabels(clusterName string, currentRole string) map[string]string {
 	return map[string]string{
-		consts.LabelKeyCurrentRole: currentRole,
-		consts.LabelKeyCluster:     clusterName,
+		consts.LabelKeyCurrentRole: currentRole, // redis-current-role: master
+		consts.LabelKeyCluster:     clusterName, // cluster: clusterName
 	}
 }
 

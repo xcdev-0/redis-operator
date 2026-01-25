@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Showmax/go-fqdn"
@@ -64,7 +65,6 @@ func applyCluster(cfg *agentutil.Config,
 	// - Redis v7+: 공식 지원
 	// - Redis v6+: 지원되지만 일부 버전에서는 동작하지 않을 수 있음
 	// - Redis v5 이하: 지원하지 않음 (설정해도 무시됨)
-	// 호스트명을 사용하면 IP가 변경되어도 클러스터가 안정적으로 동작할 수 있어요!
 	fqdnName, err := fqdn.FqdnHostname() // FQDN (Fully Qualified Domain Name) 가져오기
 	if err != nil {
 		log.Printf("Warning: Failed to get FQDN: %v", err)
@@ -158,12 +158,17 @@ func applyPort(cfg *agentutil.Config, tlsMode, redisPort string) {
 	} else {
 		cfg.Append("port", redisPort) // 일반 포트 사용
 	}
+	busPort, err := strconv.Atoi(redisPort)
+	if err != nil {
+		log.Printf("Warning: Failed to convert redis port to int: %v", err)
+	}
+	cfg.Append("bus-port", strconv.Itoa(busPort+10000))
 }
 
 // applyNodePort는 NodePort 모드 설정을 적용합니다.
 // NodePort 모드를 사용하면 각 Pod마다 다른 포트가 할당됩니다.
 // Pod의 호스트명을 기반으로 환경 변수 이름을 만들어서 해당 Pod의 포트를 가져옵니다.
-// 예: Pod 이름이 "redisutils-cluster-leader-0"이면
+// 예: Pod 이름이 "redis-cluster-leader-0"이면
 //
 //	환경 변수: "announce_port_redis_cluster_leader_0"
 func applyNodePort(cfg *agentutil.Config, nodeport, tlsMode string) {
@@ -171,7 +176,7 @@ func applyNodePort(cfg *agentutil.Config, nodeport, tlsMode string) {
 		return
 	}
 
-	podHostname, _ := os.Hostname() // Pod 호스트명 가져오기 (예: "redisutils-cluster-leader-0")
+	podHostname, _ := os.Hostname() // Pod 호스트명 가져오기 (예: "redis-cluster-leader-0")
 
 	announcePortVar := "announce_port_" + strings.ReplaceAll(podHostname, "-", "_")
 	announceBusPortVar := "announce_bus_port_" + strings.ReplaceAll(podHostname, "-", "_")

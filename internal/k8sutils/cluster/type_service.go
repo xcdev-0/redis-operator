@@ -18,7 +18,7 @@ type RedisClusterService struct {
 }
 
 func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	stsName := GetStatefulSetName(cr.Name, rcs.role)
+	stsName := k8smeta.GetStatefulSetName(cr.Name, rcs.role)
 	var epp k8smeta.ExporterPortProvider
 	if cr.Spec.RedisExporter.IsEnabled() {
 		epp = func() (port int, enable bool) {
@@ -28,7 +28,6 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		epp = k8smeta.DisableMetrics
 	}
 
-	// 1. cluster ip, headless, additional service 생성
 	labels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
 		STSName:          stsName,
 		Role:             rcs.role,
@@ -36,15 +35,19 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		ClusterName:      cr.Name,
 	})
 
-	objectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
+	selectorLabels := k8smeta.GetRedisClusterStableLabelsFromLabels(labels)
+
+	// 1. cluster ip
+	// svv name: stsName
+	clusterIPObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        stsName,
 		Namespace:   cr.Namespace,
 		Labels:      labels,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, epp),
 	})
 
-	busPort := corev1.ServicePort{
-		Name:     consts.RedisBusPortName,
+	clusterIPBusPort := corev1.ServicePort{
+		Name:     consts.RedisBusPortName,            // redis-bus
 		Port:     int32(*cr.Spec.ClientPort + 10000), // Service 포트
 		Protocol: corev1.ProtocolTCP,
 		TargetPort: intstr.IntOrString{
@@ -53,22 +56,23 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		},
 	}
 
-	extraPorts := []corev1.ServicePort{}
+	clusterIPExtraPorts := []corev1.ServicePort{}
 	if cr.Spec.KubernetesConfig.ShouldIncludeBusPort() {
-		extraPorts = append(extraPorts, busPort)
+		clusterIPExtraPorts = append(clusterIPExtraPorts, clusterIPBusPort)
 	}
 
 	var err error
 	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
-		ServiceObjectMeta:    objectMeta,
+		ServiceObjectMeta:    clusterIPObjectMeta,
+		SelectorLabels:       selectorLabels,
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
 		ExporterPortProvider: epp,
 		Headless:             false,
 		ServiceType:          "ClusterIP",
 		ClientPort:           *cr.Spec.ClientPort,
 		K8sClient:            cl,
-		ExtraPorts:           extraPorts,
+		ExtraPorts:           clusterIPExtraPorts,
 	})
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Cannot create service for Redis", "Setup.Type", rcs.role)
@@ -76,6 +80,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	}
 
 	// 2. headless service
+	// svv name: stsName + "-headless"
 	headlessObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        stsName + "-headless",
 		Namespace:   cr.Namespace,
@@ -84,9 +89,8 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	})
 	headlessExtraPorts := []corev1.ServicePort{}
 	if cr.Spec.KubernetesConfig.ShouldIncludeBusPortForHeadless() {
-		headlessExtraPorts = append(headlessExtraPorts, busPort)
+		headlessExtraPorts = append(headlessExtraPorts, clusterIPBusPort)
 	}
-	// Headless Service 생성 (ClusterIP 타입, headless=true)
 	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
 		ServiceObjectMeta:    headlessObjectMeta,
@@ -104,6 +108,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	}
 
 	// 3. additional service
+	// svv name: stsName + "-additional"
 	additionalObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        stsName + "-additional",
 		Namespace:   cr.Namespace,
@@ -112,7 +117,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	})
 	additionalExtraPorts := []corev1.ServicePort{}
 	if cr.Spec.KubernetesConfig.ShouldIncludeBusPortForAdditional() {
-		additionalExtraPorts = append(additionalExtraPorts, busPort)
+		additionalExtraPorts = append(additionalExtraPorts, clusterIPBusPort)
 	}
 	if cr.Spec.KubernetesConfig.ShouldCreateAdditionalService() {
 		err = createOrUpdateService(ctx, ServiceOptions{
@@ -132,20 +137,22 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		}
 	}
 	// 4. master service
+	// svv name: cr.Name + "-master"
 	// 일반 Service는 StatefulSet 역할(leader/follower)을 기반으로 선택하지만,
 	// Master Service는 실제 Redis 역할(master/slave)을 기반으로 선택합니다.
 	// 따라서 redis-current-role: master 라벨을 사용하여 실제 master 역할을 하는 Pod를 선택합니다.
-	metaLabels := k8smeta.GetCurrentMasterSelectorLabels(cr.Name, consts.LabelValueMaster)
+	masterSelectorLables := k8smeta.GetCurrentMasterSelectorLabels(cr.Name, consts.LabelValueMaster)
 	masterObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        cr.Name + "-master",
 		Namespace:   cr.Namespace,
-		Labels:      metaLabels,
+		Labels:      masterSelectorLables,
 		Annotations: k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, epp),
 	})
 
 	err = createOrUpdateService(ctx, ServiceOptions{
 		Namespace:            cr.Namespace,
 		ServiceObjectMeta:    masterObjectMeta,
+		SelectorLabels:       masterSelectorLables,
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
 		ExporterPortProvider: k8smeta.DisableMetrics,
 		Headless:             false,
@@ -180,21 +187,20 @@ func createOrUpdateClusterNodePortService(ctx context.Context, cr *rcvb2.RedisCl
 
 	// 각 Pod마다 개별 NodePort Service 생성
 	for i := 0; i < int(replicaCount); i++ {
-		// 예: redisutils-cluster-leader-0, redisutils-cluster-leader-1, ...
-		serviceName := GetNodePortServiceName(cr.Name, role, i)
+		podName := k8smeta.GetPodName(cr.Name, role, i)
 		serviceLabels := k8smeta.GetRedisClusterLabels(
 			&k8smeta.RedisLabels{
-				STSName: GetStatefulSetName(cr.Name, role),
+				STSName: k8smeta.GetStatefulSetName(cr.Name, role),
 				Role:    role,
 				AdditionalLabels: map[string]string{
 					// sts가 팟에게 자동으로 붙이는 레이블, 특정 팟만 선택하기 위해 사용
-					"statefulset.kubernetes.io/pod-name": serviceName,
+					"statefulset.kubernetes.io/pod-name": podName,
 				},
 				ClusterName: cr.Name,
 			})
 		serviceAnnotations := k8smeta.GenerateServiceAnots(cr.ObjectMeta, nil, k8smeta.DisableMetrics)
 		serviceObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
-			Name:        serviceName,
+			Name:        k8smeta.GetNodePortServiceName(cr.Name, role, i),
 			Namespace:   cr.Namespace,
 			Labels:      serviceLabels,
 			Annotations: serviceAnnotations,
@@ -202,7 +208,7 @@ func createOrUpdateClusterNodePortService(ctx context.Context, cr *rcvb2.RedisCl
 
 		// Redis Cluster Bus 포트 정의
 		busPort := corev1.ServicePort{
-			Name:     consts.RedisBusPortName,
+			Name:     consts.RedisBusPortName,            // redis-bus
 			Port:     int32(*cr.Spec.ClientPort + 10000), // Service 포트
 			Protocol: corev1.ProtocolTCP,
 			TargetPort: intstr.IntOrString{

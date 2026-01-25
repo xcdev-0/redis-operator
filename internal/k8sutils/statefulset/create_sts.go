@@ -32,7 +32,7 @@ func generateStatefulSetDef(
 			MinReadySeconds:                      stsParams.MinReadySeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      objectMeta.GetLabels(),
+					Labels:      objectMeta.GetLabels(), // sts label == pod label
 					Annotations: k8smeta.GenerateStatefulSetsAnots(objectMeta, stsParams.IgnoreAnnotations),
 				},
 				Spec: corev1.PodSpec{

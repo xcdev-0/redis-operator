@@ -9,6 +9,7 @@ import (
 
 	"github.com/avast/retry-go"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -17,7 +18,7 @@ import (
 
 // Redis 명령어: CLUSTER SLOTS
 func CheckClusterAllSlotsAssigned(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (bool, error) {
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executionPodName)
 	defer redisClient.Close()
 
@@ -50,8 +51,8 @@ func ReshardRedisCluster(
 	transferNodeIdx int32,
 	removeOriginEnabled bool) {
 
-	transferNodeName := GetPodName(cr.Name, "leader", int(transferNodeIdx))
-	originalNodeName := GetPodName(cr.Name, "leader", int(originalNodeIdx))
+	transferNodeName := k8smeta.GetPodName(cr.Name, "leader", int(transferNodeIdx))
+	originalNodeName := k8smeta.GetPodName(cr.Name, "leader", int(originalNodeIdx))
 
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, transferNodeName)
 	defer redisClient.Close()
@@ -105,7 +106,7 @@ func ReshardRedisCluster(
 
 // redis-cli --cluster del-node <endpoint> <node-id>
 func RemoveRedisNodeFromCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster, originalNodeDetails redisservice.RedisDetails) {
-	executePodName := GetExecutionPodName(cr.Name)
+	executePodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executePodName)
 	defer redisClient.Close()
 
@@ -137,7 +138,7 @@ func RemoveRedisNodeFromCluster(ctx context.Context, k8sClient kubernetes.Interf
 
 // redis-cli --cluster rebalance <endpoint> --cluster-use-empty-masters
 func RebalanceRedisClusterEmptyMasters(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	executionPodDetails := redisservice.RedisDetails{
 		PodName:   executionPodName,
 		Namespace: cr.Namespace,
@@ -161,7 +162,7 @@ func RebalanceRedisClusterEmptyMasters(ctx context.Context, k8sClient kubernetes
 
 // redis-cli --cluster rebalance <endpoint>
 func RebalanceRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	executePodName := GetExecutionPodName(cr.Name)
+	executePodName := k8smeta.GetExecutionPodName(cr.Name)
 	executePodDetails := redisservice.RedisDetails{
 		PodName:   executePodName,
 		Namespace: cr.Namespace,
@@ -197,7 +198,7 @@ func executeClusterResetCommand(ctx context.Context, client kubernetes.Interface
 	}
 
 	for podIndex := 0; podIndex < int(replicaCount); podIndex++ {
-		podName := GetPodName(cr.Name, nodeType, podIndex)
+		podName := k8smeta.GetPodName(cr.Name, nodeType, podIndex)
 		log.FromContext(ctx).V(1).Info("Executing redis cluster reset operations", "Redis Node", podName)
 
 		// CLUSTER RESET 명령 실행
@@ -242,7 +243,7 @@ func executeClusterResetCommand(ctx context.Context, client kubernetes.Interface
 // redis-cli flushall
 // redis-cli cluster addslots 0-16383
 func AddAllSlotsToSingleNode(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
-	executePodName := GetPodName(cr.Name, "leader", 0)
+	executePodName := k8smeta.GetPodName(cr.Name, "leader", 0)
 	err := executeClusterResetCommand(ctx, k8sClient, cr, "leader")
 	if err != nil {
 		log.FromContext(ctx).Error(err, "error executing cluster reset command")
@@ -266,14 +267,14 @@ func AddAllSlotsToSingleNode(ctx context.Context, k8sClient kubernetes.Interface
 
 // redis-cli --cluster create <endpoint>... --cluster-yes
 func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) (string, error) {
-	executePodName := GetExecutionPodName(cr.Name)
+	executePodName := k8smeta.GetExecutionPodName(cr.Name)
 	cmd := RedisInvocation{
 		Command: []string{"redis-cli", "--cluster", "create"},
 	}
 	replicas := cr.Spec.GetLeaderReplicaCount()
 	for podIndex := 0; podIndex < int(replicas); podIndex++ {
 		rd := redisservice.RedisDetails{
-			PodName:   GetPodName(cr.Name, "leader", podIndex),
+			PodName:   k8smeta.GetPodName(cr.Name, "leader", podIndex),
 			Namespace: cr.Namespace,
 		}
 		endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, rd)
@@ -292,10 +293,10 @@ func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr 
 func AddRedisLeaderNodeToCluster(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
 	activeRedisNode := GetClusterMasterNodeCount(ctx, k8sClient, cr)
 	newPodDetails := redisservice.RedisDetails{
-		PodName:   GetPodName(cr.Name, "leader", int(activeRedisNode)),
+		PodName:   k8smeta.GetPodName(cr.Name, "leader", int(activeRedisNode)),
 		Namespace: cr.Namespace,
 	}
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	executionPodDetails := redisservice.RedisDetails{
 		PodName:   executionPodName,
 		Namespace: cr.Namespace,
@@ -326,7 +327,7 @@ func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.In
 	leaderCounts := cr.Spec.GetLeaderReplicaCount()
 	followerPerLeader := followerCounts / leaderCounts
 
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sClient, cr, executionPodName)
 	defer redisClient.Close()
@@ -338,12 +339,12 @@ func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.In
 	for followerIdx := 0; followerIdx <= int(followerCounts)-1; {
 		for i := 0; i < int(followerPerLeader) && followerIdx <= int(followerCounts)-1; i++ {
 			followerPod := redisservice.RedisDetails{
-				PodName:   GetPodName(cr.Name, "follower", followerIdx),
+				PodName:   k8smeta.GetPodName(cr.Name, "follower", followerIdx),
 				Namespace: cr.Namespace,
 			}
 			// 리더3 팔로워4 일 때: 0->0, 1->1, 2->2, 3->0, 4->1 ...
 			leaderPod := redisservice.RedisDetails{
-				PodName:   GetPodName(cr.Name, "leader", (followerIdx)%int(leaderCounts)),
+				PodName:   k8smeta.GetPodName(cr.Name, "leader", (followerIdx)%int(leaderCounts)),
 				Namespace: cr.Namespace,
 			}
 			followerEndpointIP, err = redisservice.GetEndPointIP(ctx, k8sClient, cr, followerPod)
@@ -398,7 +399,7 @@ func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.In
 
 // redis-cli --cluster del-node <endpoint> <node-id>
 func RemoveRedisFollowerNodesFromCluster(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2.RedisCluster, podIndex int32) {
-	executePodName := GetExecutionPodName(cr.Name)
+	executePodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sclient, cr, executePodName)
 	defer redisClient.Close()
 
@@ -408,7 +409,7 @@ func RemoveRedisFollowerNodesFromCluster(ctx context.Context, k8sclient kubernet
 	}
 	// 삭제될 팔로워들의 리더 팟
 	targetLeaderPod := redisservice.RedisDetails{
-		PodName:   GetPodName(cr.Name, "leader", int(podIndex)),
+		PodName:   k8smeta.GetPodName(cr.Name, "leader", int(podIndex)),
 		Namespace: cr.Namespace,
 	}
 
@@ -451,7 +452,7 @@ func ClusterFailover(ctx context.Context, k8sClient kubernetes.Interface, instan
 
 func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
 	logger := log.FromContext(ctx)
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
 
@@ -472,7 +473,7 @@ func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, c
 
 		// Leader Pod IPs
 		for i := 0; i < int(leaderReplicas); i++ {
-			podName := GetPodName(cr.Name, "leader", i)
+			podName := k8smeta.GetPodName(cr.Name, "leader", i)
 			podIP, err := getPodIP(ctx, client, cr.Namespace, podName)
 			if err != nil {
 				logger.V(1).Error(err, "Failed to get Pod IP", "Pod", podName)
@@ -485,7 +486,7 @@ func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, c
 
 		// Follower Pod IPs
 		for i := 0; i < int(followerReplicas); i++ {
-			podName := GetPodName(cr.Name, "follower", i)
+			podName := k8smeta.GetPodName(cr.Name, "follower", i)
 			podIP, err := getPodIP(ctx, client, cr.Namespace, podName)
 			if err != nil {
 				logger.V(1).Error(err, "Failed to get Pod IP", "Pod", podName)
@@ -538,7 +539,7 @@ func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interfa
 	// Apply configuration to all pods
 	applyToPods := func(role string, count int32) error {
 		for i := 0; i < int(count); i++ {
-			podName := GetPodName(cr.Name, role, i)
+			podName := k8smeta.GetPodName(cr.Name, role, i)
 			redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, podName)
 			defer redisClient.Close()
 
@@ -574,13 +575,13 @@ func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interfa
 func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) {
 	totalRedisLeaderNodes := GetClusterMasterNodeCount(ctx, client, cr)
 
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
 
 	for i := 0; i < int(totalRedisLeaderNodes); i++ {
 		pod := redisservice.RedisDetails{
-			PodName:   GetPodName(cr.Name, "leader", i),
+			PodName:   k8smeta.GetPodName(cr.Name, "leader", i),
 			Namespace: cr.Namespace,
 		}
 
@@ -607,7 +608,7 @@ func RedisClusterStatusHealth(ctx context.Context, client kubernetes.Interface, 
 	// Try to check cluster health from multiple leader nodes with retry logic
 	var lastErr error
 	for i := 0; i < int(leaderReplicas); i++ {
-		executionPodName := GetPodName(cr.Name, "leader", i)
+		executionPodName := k8smeta.GetPodName(cr.Name, "leader", i)
 
 		// Retry logic with exponential backoff for each node
 		err := retry.Do(

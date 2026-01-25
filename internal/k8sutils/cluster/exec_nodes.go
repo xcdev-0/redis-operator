@@ -7,13 +7,14 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) int32 {
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
 
@@ -31,7 +32,7 @@ func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface,
 	return int32(count)
 }
 func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) int32 {
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
 
@@ -49,7 +50,7 @@ func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interfac
 	return int32(count)
 }
 func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, flagRole string) int32 {
-	executionPodName := GetExecutionPodName(cr.Name)
+	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	defer redisClient.Close()
 

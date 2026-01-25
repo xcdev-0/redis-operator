@@ -1,4 +1,4 @@
-package cluster
+package k8smeta
 
 import "strconv"
 

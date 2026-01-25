@@ -46,13 +46,14 @@ type RedisClusterRoleParams struct {
 }
 
 func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	stsName := GetStatefulSetName(cr.Name, redisClusterRoleParams.Role)
+	stsName := k8smeta.GetStatefulSetName(cr.Name, redisClusterRoleParams.Role)
 	stsLabels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
 		STSName:          stsName,
 		Role:             redisClusterRoleParams.Role,
 		AdditionalLabels: cr.Labels,
 		ClusterName:      cr.Name,
 	})
+
 	stsAnnotations := k8smeta.GenerateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	stsObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        stsName,
@@ -64,6 +65,10 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx
 	containerParams, err := generateRedisClusterContainerParams(ctx, cl, cr, redisClusterRoleParams)
 	if err != nil {
 		return err
+	}
+
+	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
+		applyNodePortEnvConfig(ctx, cl, &containerParams, cr, redisClusterRoleParams)
 	}
 
 	err = statefulset.CreateOrUpdateStateFul(
@@ -148,10 +153,6 @@ func generateStatefulSetParams(
 	return stsParams
 }
 
-// ========================================================
-// statefulset 파라미터 생성 헬퍼 함수
-// ========================================================
-
 // getDeletionPropagationStrategy는 어노테이션을 기반으로 삭제 전파 전략을 반환합니다.
 // 삭제 전파 전략은 StatefulSet을 삭제할 때 자식 리소스(Pod, PVC 등)를 어떻게 처리할지 결정합니다.
 func getDeletionPropagationStrategy(annotations map[string]string) *metav1.DeletionPropagation {
@@ -182,7 +183,7 @@ func getDeletionPropagationStrategy(annotations map[string]string) *metav1.Delet
 }
 
 // ========================================================
-// Container 파라미터 생성 (메인 함수)
+// Container 파라미터 생성
 // ========================================================
 func generateRedisClusterContainerParams(
 	ctx context.Context,
@@ -190,30 +191,7 @@ func generateRedisClusterContainerParams(
 	cr *rcvb2.RedisCluster,
 	roleParams RedisClusterRoleParams,
 ) (statefulset.ContainerParameters, error) {
-	params := buildBaseContainerParams(cr, roleParams)
-
-	applyStorageConfig(&params, cr.Spec.Storage)
-	applyMonitoringConfig(&params, cr.Spec.RedisExporter)
-	applySecurityConfig(&params, cr.Spec.TLS, cr.Spec.ACL)
-
-	if err := applyAuthConfig(&params, cr); err != nil {
-		return params, err
-	}
-
-	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-		applyNodePortConfig(ctx, cl, &params, cr, roleParams)
-	}
-
-	return params, nil
-}
-
-// ========================================================
-// Container 파라미터 생성 (헬퍼 함수들)
-// ========================================================
-
-// buildBaseContainerParams는 기본 컨테이너 파라미터를 생성합니다.
-func buildBaseContainerParams(cr *rcvb2.RedisCluster, roleParams RedisClusterRoleParams) statefulset.ContainerParameters {
-	return statefulset.ContainerParameters{
+	params := statefulset.ContainerParameters{
 		RedisSetupType:          "cluster",
 		Image:                   cr.Spec.KubernetesConfig.Image,
 		ImagePullPolicy:         cr.Spec.KubernetesConfig.ImagePullPolicy,
@@ -228,6 +206,15 @@ func buildBaseContainerParams(cr *rcvb2.RedisCluster, roleParams RedisClusterRol
 		DataPersistenceEnabled:  cr.Spec.IsDataPersistenceEnabled(),
 		NodePersistenceEnabled:  cr.Spec.IsNodePersistenceEnabled(),
 	}
+	applyStorageConfig(&params, cr.Spec.Storage)
+	applyMonitoringConfig(&params, cr.Spec.RedisExporter)
+	applySecurityConfig(&params, cr.Spec.TLS, cr.Spec.ACL)
+
+	if err := applyAuthConfig(&params, cr); err != nil {
+		return params, err
+	}
+
+	return params, nil
 }
 
 // applyStorageConfig는 스토리지 관련 설정을 적용합니다.
@@ -290,7 +277,7 @@ func applySecurityConfig(params *statefulset.ContainerParameters, tls *rcvb2.TLS
 	}
 }
 
-func applyNodePortConfig(
+func applyNodePortEnvConfig(
 	ctx context.Context,
 	cl kubernetes.Interface,
 	params *statefulset.ContainerParameters, // 포인터로 전달: 구조체 필드를 수정하면 원본에 영향
@@ -303,7 +290,6 @@ func applyNodePortConfig(
 		ctx, cl, cr.Namespace, cr.Name,
 		roleParams.Role, roleParams.ReplicaCounts,
 	)
-	// append는 새 슬라이스를 반환할 수 있으므로 반환값을 받아서 다시 포인터로 할당
 	params.EnvVars = ptr.To(append(envVars, nodePortEnvVars...))
 }
 
@@ -332,11 +318,26 @@ func generateNodePortEnvVars(
 
 	// 각 Pod의 Service를 조회하여 NodePort 정보 수집
 	for i := 0; i < int(replicaCount); i++ {
-		svcName := GetNodePortServiceName(clusterName, role, i)
+		svcName := k8smeta.GetNodePortServiceName(clusterName, role, i)
 		svc, err := getService(ctx, cl, namespace, svcName)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Cannot get service for redis pod",
 				"name", svcName, "namespace", namespace)
+			continue
+		}
+
+		// 이름으로 포트 찾기 (인덱스 의존 제거)
+		clientPort := getServicePortByName(svc, consts.RedisClientPortName)
+		busPort := getServicePortByName(svc, consts.RedisBusPortName)
+
+		if clientPort == nil {
+			log.FromContext(ctx).Error(nil, "Redis client port not found in service",
+				"service", svcName, "expectedPort", consts.RedisClientPortName)
+			continue
+		}
+		if busPort == nil {
+			log.FromContext(ctx).Error(nil, "Redis bus port not found in service",
+				"service", svcName, "expectedPort", consts.RedisBusPortName)
 			continue
 		}
 
@@ -345,11 +346,11 @@ func generateNodePortEnvVars(
 		envVars = append(envVars,
 			corev1.EnvVar{
 				Name:  "announce_port_" + envVarPrefix,
-				Value: strconv.Itoa(int(svc.Spec.Ports[0].NodePort)),
+				Value: strconv.Itoa(int(clientPort.NodePort)),
 			},
 			corev1.EnvVar{
 				Name:  "announce_bus_port_" + envVarPrefix,
-				Value: strconv.Itoa(int(svc.Spec.Ports[1].NodePort)),
+				Value: strconv.Itoa(int(busPort.NodePort)),
 			},
 		)
 	}

@@ -55,15 +55,15 @@ func CreateRedisFollowerSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kube
 }
 
 func CreateRedisLeaderService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	prop := RedisClusterService{
+	rcs := RedisClusterService{
 		role: "leader",
 	}
-	return prop.CreateRedisClusterService(ctx, cr, cl)
+	return rcs.CreateRedisClusterService(ctx, cr, cl)
 }
 
 func CreateRedisFollowerService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
-	prop := RedisClusterService{
+	rcs := RedisClusterService{
 		role: "follower",
 	}
-	return prop.CreateRedisClusterService(ctx, cr, cl)
+	return rcs.CreateRedisClusterService(ctx, cr, cl)
 }

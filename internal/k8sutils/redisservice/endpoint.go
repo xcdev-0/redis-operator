@@ -2,13 +2,18 @@ package redisservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/samber/lo"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/envs"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -94,11 +99,39 @@ func getEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.Red
 			host = "[" + host + "]"
 		}
 	}
-
+	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
+		svc, err := getService(ctx, client, cr.Namespace, rd.PodName) //nodeport 서비스는 팟과 이름 같음
+		if err != nil {
+			return nil, err
+		}
+		if svc.Spec.Type != corev1.ServiceTypeNodePort {
+			return nil, errors.New("service type mismatch")
+		}
+		svcPort, ok := lo.Find(svc.Spec.Ports, func(item corev1.ServicePort) bool {
+			return item.Name == consts.RedisClientPortName // redis-client
+		})
+		if ok {
+			port = int(svcPort.NodePort)
+		}
+		pod, err := client.CoreV1().Pods(rd.Namespace).Get(ctx, rd.PodName, metav1.GetOptions{})
+		if err != nil {
+			log.FromContext(ctx).Error(err, "")
+			return nil, err
+		}
+		host = pod.Status.HostIP
+	}
 	return &EndpointInfo{
 		Host: host,
 		Port: strconv.Itoa(port),
 	}, nil
+}
+
+func getService(ctx context.Context, client kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
+	serviceInfo, err := client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return serviceInfo, nil
 }
 
 func GetRedisPodIP(ctx context.Context, client kubernetes.Interface, redisInfo RedisDetails) string {
