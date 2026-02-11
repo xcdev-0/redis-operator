@@ -28,11 +28,11 @@ func NewConfigVolumeConfig() VolumeConfig {
 	}
 }
 
-// NewExternalConfigVolumeConfig는 외부 ConfigMap용 Volume과 VolumeMount를 생성합니다.
-func NewExternalConfigVolumeConfig(configMapName string) VolumeConfig {
+// NewAdditionalRedisVolumeConfig는 외부 ConfigMap용 Volume과 VolumeMount를 생성합니다.
+func NewAdditionalRedisVolumeConfig(configMapName string) VolumeConfig {
 	return VolumeConfig{
 		Volume: corev1.Volume{
-			Name: consts.VolumeNameExternalConfig,
+			Name: consts.VolumeNameAdditionalRedisConfig,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
@@ -42,7 +42,7 @@ func NewExternalConfigVolumeConfig(configMapName string) VolumeConfig {
 			},
 		},
 		VolumeMount: corev1.VolumeMount{
-			Name:      consts.VolumeNameExternalConfig,
+			Name:      consts.VolumeNameAdditionalRedisConfig,
 			MountPath: "/etc/redis/external.conf.d",
 		},
 	}

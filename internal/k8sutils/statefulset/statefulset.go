@@ -30,16 +30,6 @@ type StatefulSetService struct {
 	kubeClient kubernetes.Interface
 }
 
-// PatchStatefulSetRequest는 StatefulSet 패치에 필요한 모든 파라미터를 담는 구조체입니다.
-type PatchStatefulSetRequest struct {
-	StoredStateful      *appsv1.StatefulSet         // 클러스터에 현재 저장된 StatefulSet
-	NewStateful         *appsv1.StatefulSet         // 새로 적용할 StatefulSet
-	Namespace           string                      // StatefulSet이 속한 네임스페이스
-	RecreateStatefulSet bool                        // 변경 불가능한 필드 변경 시 재생성 여부
-	DeletionPropagation *metav1.DeletionPropagation // StatefulSet 삭제 시 전파 전략 (Orphan/Background/Foreground)
-	KubeClient          kubernetes.Interface        // Kubernetes API 클라이언트
-}
-
 // interface implementation
 // IsStatefulSet, GetStatefulSetReplicas
 func (s *StatefulSetService) IsStatefulSetReady(ctx context.Context, namespace, name string) bool {
@@ -101,8 +91,8 @@ func NewStatefulSetService(kubeClient kubernetes.Interface) *StatefulSetService 
 	}
 }
 
-// StatefulSetRequest는 CreateOrUpdateStateFul 함수에 전달되는 모든 매개변수를 그룹화합니다.
-type StatefulSetRequest struct {
+// STSCreateOrUpdateRequest는 CreateOrUpdateStateFul 함수에 전달되는 모든 매개변수를 그룹화합니다.
+type STSCreateOrUpdateRequest struct {
 	Namespace       string
 	StsObjectMeta   metav1.ObjectMeta
 	OwnerReference  metav1.OwnerReference
@@ -112,14 +102,13 @@ type StatefulSetRequest struct {
 
 func CreateOrUpdateStateFul(ctx context.Context,
 	kubeClient kubernetes.Interface,
-	req *StatefulSetRequest) error {
+	req *STSCreateOrUpdateRequest) error {
 	storedStateful, err := getStatefulSet(ctx, kubeClient, req.Namespace, req.StsObjectMeta.Name)
 	statefulSetDef := generateStatefulSetDef(
-		req.StsObjectMeta,
 		req.StsParams,
+		req.StsObjectMeta,
 		req.OwnerReference,
-		req.ContainerParams,
-	)
+		req.ContainerParams)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// StatefulSet이 존재하지 않는 경우에만 어노테이션 설정
@@ -158,6 +147,16 @@ func createStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace s
 		return err
 	}
 	return nil
+}
+
+// PatchStatefulSetRequest는 StatefulSet 패치에 필요한 모든 파라미터를 담는 구조체입니다.
+type PatchStatefulSetRequest struct {
+	StoredStateful      *appsv1.StatefulSet         // 클러스터에 현재 저장된 StatefulSet
+	NewStateful         *appsv1.StatefulSet         // 새로 적용할 StatefulSet
+	Namespace           string                      // StatefulSet이 속한 네임스페이스
+	RecreateStatefulSet bool                        // 변경 불가능한 필드 변경 시 재생성 여부
+	DeletionPropagation *metav1.DeletionPropagation // StatefulSet 삭제 시 전파 전략 (Orphan/Background/Foreground)
+	KubeClient          kubernetes.Interface        // Kubernetes API 클라이언트
 }
 
 // patchStatefulSet은 StatefulSet을 업데이트하거나 재생성합니다.
@@ -227,7 +226,7 @@ func patchStatefulSet(ctx context.Context, req *PatchStatefulSetRequest) error {
 		return err
 	}
 
-	return updateStatefulSet(ctx, &UpdateStatefulSetRequest{
+	return updateOrDeleteStatefulSet(ctx, &UpdateStatefulSetRequest{
 		Stateful:            req.NewStateful,
 		Namespace:           req.Namespace,
 		RecreateStatefulSet: req.RecreateStatefulSet,
@@ -269,20 +268,25 @@ type UpdateStatefulSetRequest struct {
 	KubeClient          kubernetes.Interface        // Kubernetes API 클라이언트
 }
 
-func updateStatefulSet(ctx context.Context, req *UpdateStatefulSetRequest) error {
+func updateOrDeleteStatefulSet(ctx context.Context, req *UpdateStatefulSetRequest) error {
 	_, err := req.KubeClient.AppsV1().StatefulSets(req.Namespace).Update(ctx, req.Stateful, metav1.UpdateOptions{})
 	if req.RecreateStatefulSet {
 		var sErr *apierrors.StatusError
+		// sts 재생성 활성화되었고,  vct 변경 시도가 있었을 경우 원래 sts를 삭제함
+		// 다음 reconcile에서 스테이트풀 셋을 재생성해줌
 		if errors.As(err, &sErr) && sErr.ErrStatus.Code == 422 && sErr.ErrStatus.Reason == metav1.StatusReasonInvalid {
 			failMsg := make([]string, len(sErr.ErrStatus.Details.Causes))
 			for messageCount, cause := range sErr.ErrStatus.Details.Causes {
 				failMsg[messageCount] = cause.Message
 			}
 			log.FromContext(ctx).V(1).Info("recreating StatefulSet because the update operation wasn't possible", "reason", strings.Join(failMsg, ", "))
-			if err := req.KubeClient.AppsV1().StatefulSets(req.Namespace).Delete(ctx, req.Stateful.GetName(), metav1.DeleteOptions{PropagationPolicy: req.DeletionPropagation}); err != nil { //nolint:gocritic
+			if err := req.KubeClient.AppsV1().StatefulSets(req.Namespace).Delete(
+				ctx,
+				req.Stateful.GetName(),
+				metav1.DeleteOptions{PropagationPolicy: req.DeletionPropagation}); err != nil { //nolint:gocritic
 				return errors.Wrap(err, "failed to delete StatefulSet to avoid forbidden action")
 			}
-			return nil // rely on the controller to recreate the StatefulSet
+			return nil
 		}
 	}
 	if err != nil {
