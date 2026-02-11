@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/Showmax/go-fqdn"
@@ -28,6 +27,33 @@ supervised no
 pidfile /var/run/redisutils.pid
 `
 
+// GenerateConfig는 환경 변수를 읽어서 Redis 설정 파일(redisutils.conf)을 동적으로 생성합니다.
+// 이 함수는 Init Container에서 실행되며, Pod가 시작되기 전에 Redis 설정을 준비합니다.
+func GenerateConfig() error {
+	cfg := agentutil.NewConfig("/etc/redis/redis.conf", defaultRedisConfig)
+	var (
+		persistenceEnabled = util.CoalesceEnv1(consts.DATA_PERSISTENCE_ENABLED, "false") // 데이터 영속화 활성화 여부
+		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                      // Redis 데이터 저장 디렉토리
+		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")            // 클러스터 nodes.conf 파일 위치
+		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")         // Redis 메이저 버전 (v6 또는 v7)
+		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")                // Redis 포트 번호
+		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                      // NodePort 모드 사용 여부 (Kubernetes Service 타입)
+		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")                 // TLS 암호화 활성화 여부
+	)
+
+	applyAuth(cfg)
+	applyCluster(cfg, nodeport, nodeConfDir, redisMajorVersion)
+	applyTLS(cfg, tlsMode, redisMajorVersion, nodeport)
+	applyACL(cfg)
+	applyPersistence(cfg, persistenceEnabled, dataDir)
+	applyPort(cfg, tlsMode, redisPort)
+	applyNodePort(cfg, nodeport, tlsMode)
+	applyMemory(cfg)
+	applyExternalConfig(cfg, "/etc/redis/external.conf.d")
+
+	return cfg.Commit()
+}
+
 func applyAuth(cfg *agentutil.Config) {
 	if val, ok := util.CoalesceEnv(consts.REDIS_PASSWORD, ""); ok && val != "" {
 		cfg.Append("masterauth", val)       // Master-Replica 복제 인증
@@ -38,10 +64,11 @@ func applyAuth(cfg *agentutil.Config) {
 		cfg.Append("protected-mode", "no") // 보호 모드 비활성화 (비밀번호 없이 접근 가능)
 	}
 }
+
 func applyCluster(cfg *agentutil.Config,
 	nodePortEnabled string,
-	redisMajorVersion string,
-	nodeConfDir string) {
+	nodeConfDir string,
+	redisMajorVersion string) {
 
 	// 클러스터 노드 간 통신을 위한 IP 주소 설정
 	var err error
@@ -57,20 +84,17 @@ func applyCluster(cfg *agentutil.Config,
 		}
 	}
 	if clusterAnnounceIP != "" {
-		// 클러스터 노드들이 서로 통신할 때 사용할 IP 주소
 		cfg.Append("cluster-announce-ip", clusterAnnounceIP)
-	}
-
-	// cluster-announce-hostname: Redis 클러스터 노드가 호스트명을 사용하도록 설정
-	// - Redis v7+: 공식 지원
-	// - Redis v6+: 지원되지만 일부 버전에서는 동작하지 않을 수 있음
-	// - Redis v5 이하: 지원하지 않음 (설정해도 무시됨)
-	fqdnName, err := fqdn.FqdnHostname() // FQDN (Fully Qualified Domain Name) 가져오기
-	if err != nil {
-		log.Printf("Warning: Failed to get FQDN: %v", err)
 	} else {
-		// 클러스터 노드들이 서로 통신할 때 사용할 호스트명
-		cfg.Append("cluster-announce-hostname", fqdnName)
+		log.Printf("Warning: Failed to get cluster announce IP")
+	}
+	if redisMajorVersion == "v7" {
+		fqdnName, err := fqdn.FqdnHostname()
+		if err != nil {
+			log.Printf("Warning: Failed to get FQDN: %v", err)
+		} else {
+			cfg.Append("cluster-announce-hostname", fqdnName)
+		}
 	}
 
 	nodeConfPath := filepath.Join(nodeConfDir, "nodes.conf")
@@ -158,11 +182,6 @@ func applyPort(cfg *agentutil.Config, tlsMode, redisPort string) {
 	} else {
 		cfg.Append("port", redisPort) // 일반 포트 사용
 	}
-	busPort, err := strconv.Atoi(redisPort)
-	if err != nil {
-		log.Printf("Warning: Failed to convert redis port to int: %v", err)
-	}
-	cfg.Append("bus-port", strconv.Itoa(busPort+10000))
 }
 
 // applyNodePort는 NodePort 모드 설정을 적용합니다.
@@ -240,33 +259,6 @@ func applyExternalConfig(cfg *agentutil.Config, externalConfigDir string) {
 		fmt.Printf("  - %s\n", filepath.Base(file))
 		cfg.Append("include", file)
 	}
-}
-
-// GenerateConfig는 환경 변수를 읽어서 Redis 설정 파일(redisutils.conf)을 동적으로 생성합니다.
-// 이 함수는 Init Container에서 실행되며, Pod가 시작되기 전에 Redis 설정을 준비합니다.
-func GenerateConfig() error {
-	cfg := agentutil.NewConfig("/etc/redis/redis.conf", defaultRedisConfig)
-	var (
-		persistenceEnabled = util.CoalesceEnv1(consts.DATA_PERSISTENCE_ENABLED, "false") // 데이터 영속화 활성화 여부
-		dataDir            = util.CoalesceEnv1("DATA_DIR", "/data")                      // Redis 데이터 저장 디렉토리
-		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")            // 클러스터 nodes.conf 파일 위치
-		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")         // Redis 메이저 버전 (v6 또는 v7)
-		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")                // Redis 포트 번호
-		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                      // NodePort 모드 사용 여부 (Kubernetes Service 타입)
-		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")                 // TLS 암호화 활성화 여부
-	)
-
-	applyAuth(cfg)
-	applyCluster(cfg, nodeport, redisMajorVersion, nodeConfDir)
-	applyTLS(cfg, tlsMode, redisMajorVersion, nodeport)
-	applyACL(cfg)
-	applyPersistence(cfg, persistenceEnabled, dataDir)
-	applyPort(cfg, tlsMode, redisPort)
-	applyNodePort(cfg, nodeport, tlsMode)
-	applyMemory(cfg)
-	applyExternalConfig(cfg, "/etc/redis/external.conf.d")
-
-	return cfg.Commit()
 }
 
 func updateMyselfIP(nodesConfPath, newIP string) (updated []byte, err error) {

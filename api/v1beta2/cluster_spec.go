@@ -1,6 +1,11 @@
 package v1beta2
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"fmt"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+)
 
 // omitempty 동작방식이
 // 포인터 아닐 때 → zero-value도 "비어 있다"고 판단
@@ -25,8 +30,9 @@ type RedisClusterSpec struct {
 	RedisFollower RedisFollower `json:"redisFollower,omitempty"`
 
 	// ===== Redis 설정 =====
-	RedisConfig *RedisConfig    `json:"redisConfig,omitempty"`
-	Storage     *ClusterStorage `json:"storage,omitempty"`
+	RedisConfig   *RedisConfig    `json:"redisConfig,omitempty"`
+	Storage       *ClusterStorage `json:"storage,omitempty"`
+	DynamicConfig []string        `json:"dynamicConfig,omitempty"`
 
 	// ===== 보안 및 인증 설정 =====
 	TLS                *TLSConfig                 `json:"TLS,omitempty"`
@@ -44,92 +50,265 @@ type RedisClusterSpec struct {
 	EnvVars *[]corev1.EnvVar `json:"env,omitempty"`
 }
 
-// GetRedisDynamicConfig returns Redis dynamic configuration parameters.
-// Priority: top-level config > leader config > follower config
-func (cr *RedisClusterSpec) GetRedisDynamicConfig() []string {
-	// Use top-level configuration if available
-	if cr.RedisConfig != nil && len(cr.RedisConfig.DynamicConfig) > 0 {
-		return cr.RedisConfig.DynamicConfig
-	}
-	// Return empty slice if no configuration is found
-	return []string{}
+// ==================================================
+// Kubernetes Config
+// ==================================================
+// +k8s:deepcopy-gen=true
+type KubernetesConfig struct {
+	// ===== 이미지 설정 =====
+	Image            string                         `json:"image"`
+	ImagePullPolicy  corev1.PullPolicy              `json:"imagePullPolicy,omitempty"`
+	ImagePullSecrets *[]corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// ===== 리소스 및 인증 설정 =====
+	Resources              *corev1.ResourceRequirements `json:"resources,omitempty"`
+	ExistingPasswordSecret *ExistingPasswordSecret      `json:"redisSecret,omitempty"`
+
+	// ===== StatefulSet 설정 =====
+	UpdateStrategy                       appsv1.StatefulSetUpdateStrategy                        `json:"updateStrategy,omitempty"`
+	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
+	MinReadySeconds                      *int32                                                  `json:"minReadySeconds,omitempty"`
+
+	// ===== Service 설정 =====
+	Service *ServiceConfig `json:"service,omitempty"`
+
+	// ===== 기타 설정 =====
+	IgnoreAnnotations []string `json:"ignoreAnnotations,omitempty"`
 }
 
-func (cr *RedisClusterSpec) GetLeaderReplicaCount() int32 {
-	if cr.RedisLeader.ReplicaCount != nil {
-		return *cr.RedisLeader.ReplicaCount
-	}
-	return *cr.ClusterSize
+// ==================================================
+// Redis Config
+// ==================================================
+// +k8s:deepcopy-gen=true
+type RedisConfig struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	MaxMemoryPercentOfLimit *int `json:"maxMemoryPercentOfLimit,omitempty"`
+	// DynamicConfig           []string `json:"dynamicConfig,omitempty"`
+	AdditionalRedisConfig *string `json:"additionalRedisConfig,omitempty"`
 }
 
-func (cr *RedisClusterSpec) GetFollowerReplicaCount() int32 {
-	if cr.RedisFollower.ReplicaCount != nil {
-		return *cr.RedisFollower.ReplicaCount
-	}
-	return *cr.ClusterSize
+// ==================================================
+// Service
+// ==================================================
+// +k8s:deepcopy-gen=true
+type ServiceConfig struct {
+	// +kubebuilder:validation:Enum=LoadBalancer;NodePort;ClusterIP
+	ServiceType        string            `json:"serviceType,omitempty"`
+	ServiceAnnotations map[string]string `json:"annotations,omitempty"`
+	IncludeBusPort     *bool             `json:"includeBusPort,omitempty"`
+	Additional         *Service          `json:"additional,omitempty"`
 }
 
-func (cr *RedisCluster) GetClientPort() int {
-	if cr.Spec.ClientPort != nil {
-		return *cr.Spec.ClientPort
-	}
-	return 6379
+// +k8s:deepcopy-gen=true
+type Service struct {
+	// +kubebuilder:validation:Enum=LoadBalancer;NodePort;ClusterIP
+	// +kubebuilder:default:=ClusterIP
+	Type string `json:"type,omitempty"`
+	// +kubebuilder:default:=true
+	Enabled        *bool             `json:"enabled,omitempty"`
+	Annotations    map[string]string `json:"annotations,omitempty"`
+	IncludeBusPort *bool             `json:"includeBusPort,omitempty"`
 }
 
-// IsDataPersistenceEnabled는 데이터 영속성이 활성화되어 있는지 확인합니다.
-func (cr *RedisClusterSpec) IsDataPersistenceEnabled() bool {
-	if cr.Storage == nil {
-		return false
-	}
-	return cr.Storage.Data.Enabled // cr.Storage.Data도 nil검사해야하나????
+// ==================================================
+// Cluster Storage
+// ==================================================
+// 레디스 클러스터 전용 스토리지 설정
+// +k8s:deepcopy-gen=true
+type ClusterStorage struct {
+	Node                      NodeStorage               `json:"node,omitempty"`
+	Data                      DataStorage               `json:"data,omitempty"`
+	AdditionalVolumeAndMounts AdditionalVolumeAndMounts `json:"additionalVolumeAndMounts,omitempty"`
 }
 
-// IsNodePersistenceEnabled는 노드 설정 영속성이 활성화되어 있는지 확인합니다.
-func (cr *RedisClusterSpec) IsNodePersistenceEnabled() bool {
-	if cr.Storage == nil {
-		return false
-	}
-	return cr.Storage.Node.Enabled
+// 유저 전용 볼륨 마운트 설정
+// +k8s:deepcopy-gen=true
+type AdditionalVolumeAndMounts struct {
+	Volumes      []corev1.Volume      `json:"volumes,omitempty"`
+	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
 }
 
-func (cr *RedisClusterSpec) GetRedisLeaderResources() *corev1.ResourceRequirements {
-	if cr.RedisLeader.Resources != nil {
-		return cr.RedisLeader.Resources
-	}
-	return cr.KubernetesConfig.Resources
+// Redis 데이터 전용 PVC
+// +k8s:deepcopy-gen=true
+type DataStorage struct {
+	Enabled               bool                         `json:"enabled,omitempty"`
+	KeepAfterDelete       bool                         `json:"keepAfterDelete,omitempty"`
+	PersistentVolumeClaim corev1.PersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 }
 
-func (cr *RedisClusterSpec) GetRedisFollowerResources() *corev1.ResourceRequirements {
-	if cr.RedisFollower.Resources != nil {
-		return cr.RedisFollower.Resources
-	}
-	return cr.KubernetesConfig.Resources
+// 레디스 클러스터 노드 설정 전용 PVC
+// +k8s:deepcopy-gen=true
+type NodeStorage struct {
+	// +kubebuilder:default=false
+	Enabled               bool                         `json:"enabled,omitempty"`
+	PersistentVolumeClaim corev1.PersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 }
 
-// 우선순위: role별 RedisConfig (RedisLeader/RedisFollower.RedisConfig) > 최상위 RedisConfig
-func (cr *RedisClusterSpec) GetRedisMaxPercentOfLimitConfig(role string) *int {
-	if role == "leader" && cr.RedisLeader.RedisConfig != nil && cr.RedisLeader.RedisConfig.MaxMemoryPercentOfLimit != nil {
-		return cr.RedisLeader.RedisConfig.MaxMemoryPercentOfLimit
-	}
-	if role == "follower" && cr.RedisFollower.RedisConfig != nil && cr.RedisFollower.RedisConfig.MaxMemoryPercentOfLimit != nil {
-		return cr.RedisFollower.RedisConfig.MaxMemoryPercentOfLimit
-	}
-	if cr.RedisConfig != nil && cr.RedisConfig.MaxMemoryPercentOfLimit != nil {
-		return cr.RedisConfig.MaxMemoryPercentOfLimit
-	}
-	return nil
+// ==================================================
+// Sidecar & Exporter
+// ==================================================
+// +k8s:deepcopy-gen=true
+type Sidecar struct {
+	Name            string                       `json:"name"`
+	Image           string                       `json:"image"`
+	ImagePullPolicy corev1.PullPolicy            `json:"imagePullPolicy,omitempty"`
+	Resources       *corev1.ResourceRequirements `json:"resources,omitempty"`
+	EnvVars         *[]corev1.EnvVar             `json:"env,omitempty"`
+	Volumes         *[]corev1.VolumeMount        `json:"mountPath,omitempty"`
+	Command         []string                     `json:"command,omitempty" protobuf:"bytes,3,rep,name=command"`
+	Ports           *[]corev1.ContainerPort      `json:"ports,omitempty" patchStrategy:"merge" patchMergeKey:"containerPort" protobuf:"bytes,6,rep,name=ports"`
+	SecurityContext *corev1.SecurityContext      `json:"securityContext,omitempty"`
 }
 
-// 우선순위: role별 RedisConfig.AdditionalRedisConfig > 최상위 RedisConfig.AdditionalRedisConfig
-func (cr *RedisClusterSpec) GetExternalConfig(role string) *string {
-	if role == "leader" && cr.RedisLeader.RedisConfig != nil && cr.RedisLeader.RedisConfig.AdditionalRedisConfig != nil {
-		return cr.RedisLeader.RedisConfig.AdditionalRedisConfig
+// +k8s:deepcopy-gen=true
+type RedisExporter struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// +kubebuilder:default:=9121
+	Port            *int                         `json:"port,omitempty"`
+	Image           string                       `json:"image"`
+	Resources       *corev1.ResourceRequirements `json:"resources,omitempty"`
+	ImagePullPolicy corev1.PullPolicy            `json:"imagePullPolicy,omitempty"`
+	EnvVars         *[]corev1.EnvVar             `json:"env,omitempty"`
+	SecurityContext *corev1.SecurityContext      `json:"securityContext,omitempty"`
+}
+
+func (re *RedisExporter) IsEnabled() bool {
+	return re.Enabled
+}
+
+// ==================================================
+// Redis Leader & Follower
+// ==================================================
+
+// RedisRoleSpec는 Leader/Follower 공통 역할별 설정을 정의합니다.
+// RedisLeader와 RedisFollower에 임베딩되어 사용됩니다.
+// +k8s:deepcopy-gen=true
+type RedisRoleSpec struct {
+	// ===== 기본 설정 =====
+	ReplicaCount *int32                       `json:"replicaCount,omitempty"`
+	Resources    *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// ===== Redis 설정 =====
+	RedisConfig *RedisConfig `json:"redisConfig,omitempty"`
+
+	// ===== 스케줄링 설정 =====
+	Affinity                  *corev1.Affinity                  `json:"affinity,omitempty"`
+	NodeSelector              map[string]string                 `json:"nodeSelector,omitempty"`
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+	Tolerations               *[]corev1.Toleration              `json:"tolerations,omitempty"`
+
+	// ===== 보안 설정 =====
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
+	// ===== Health Check 설정 =====
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty" protobuf:"bytes,11,opt,name=readinessProbe"`
+	LivenessProbe  *corev1.Probe `json:"livenessProbe,omitempty" protobuf:"bytes,12,opt,name=livenessProbe"`
+
+	// ===== 기타 설정 =====
+	PodDisruptionBudget           *RedisPodDisruptionBudget `json:"pdb,omitempty"`
+	TerminationGracePeriodSeconds *int64                    `json:"terminationGracePeriodSeconds,omitempty" protobuf:"varint,4,opt,name=terminationGracePeriodSeconds"`
+}
+
+// RedisLeader는 Leader 노드의 설정을 정의합니다.
+// Leader는 읽기/쓰기 요청을 처리하는 마스터 노드입니다.
+// +k8s:deepcopy-gen=true
+type RedisLeader struct {
+	RedisRoleSpec `json:",inline"`
+}
+
+// RedisFollower는 Follower 노드의 설정을 정의합니다.
+// Follower는 읽기 전용 복제 노드입니다.
+// +k8s:deepcopy-gen=true
+type RedisFollower struct {
+	RedisRoleSpec `json:",inline"`
+}
+
+// ExistingPasswordSecret은 기존 Kubernetes Secret에서 Redis 비밀번호를 참조하기 위한 설정입니다.
+// +k8s:deepcopy-gen=true
+type ExistingPasswordSecret struct {
+	// Name은 Secret의 이름입니다.
+	Name *string `json:"name,omitempty"`
+	// Key는 Secret 내에서 비밀번호가 저장된 키 이름입니다.
+	Key *string `json:"key,omitempty"`
+}
+
+// GetName은 Secret 이름을 반환합니다. Name이 nil이면 에러를 반환합니다.
+func (eps *ExistingPasswordSecret) GetName() (string, error) {
+	if eps == nil || eps.Name == nil {
+		return "", fmt.Errorf("ExistingPasswordSecret.Name is required but not set")
 	}
-	if role == "follower" && cr.RedisFollower.RedisConfig != nil && cr.RedisFollower.RedisConfig.AdditionalRedisConfig != nil {
-		return cr.RedisFollower.RedisConfig.AdditionalRedisConfig
+	return *eps.Name, nil
+}
+
+// GetKey는 Secret 내의 키 이름을 반환합니다. Key가 nil이면 에러를 반환합니다.
+func (eps *ExistingPasswordSecret) GetKey() (string, error) {
+	if eps == nil || eps.Key == nil {
+		return "", fmt.Errorf("ExistingPasswordSecret.Key is required but not set")
 	}
-	if cr.RedisConfig != nil && cr.RedisConfig.AdditionalRedisConfig != nil {
-		return cr.RedisConfig.AdditionalRedisConfig
+	return *eps.Key, nil
+}
+
+// ==================================================
+// RedisPodDisruptionBudget
+// ==================================================
+
+// RedisPodDisruptionBudget은 Pod Disruption Budget (PDB) 설정을 정의합니다.
+// PDB는 자동화된 Pod 중단 시 가용성을 보장합니다.
+// +k8s:deepcopy-gen=true
+type RedisPodDisruptionBudget struct {
+	// Enabled는 PDB를 활성화할지 여부를 설정합니다.
+	Enabled bool `json:"enabled,omitempty"`
+	// MinAvailable는 최소한 유지해야 할 Pod 수를 설정합니다.
+	// MaxUnavailable과 동시에 설정할 수 없습니다.
+	MinAvailable *int32 `json:"minAvailable,omitempty"`
+	// MaxUnavailable는 동시에 중단될 수 있는 최대 Pod 수를 설정합니다.
+	// MinAvailable과 동시에 설정할 수 없습니다.
+	MaxUnavailable *int32 `json:"maxUnavailable,omitempty"`
+}
+
+// ==================================================
+// TLS Config
+// ==================================================
+// +k8s:deepcopy-gen=true
+type TLSConfig struct {
+	Secret      corev1.SecretVolumeSource `json:"secret"`
+	CaKeyFile   string                    `json:"caKey,omitempty"`
+	CertKeyFile string                    `json:"certKey,omitempty"`
+	KeyFile     string                    `json:"keyKey,omitempty"`
+}
+
+func (tc *TLSConfig) GetSecretName() string {
+	return tc.Secret.SecretName
+}
+func (tc *TLSConfig) GetCaKeyFile() string {
+	if tc.CaKeyFile == "" {
+		return "ca.crt"
 	}
-	return nil
+	return tc.CaKeyFile
+}
+func (tc *TLSConfig) GetCertKeyFile() string {
+	if tc.CertKeyFile == "" {
+		return "tls.crt"
+	}
+	return tc.CertKeyFile
+}
+func (tc *TLSConfig) GetKeyFile() string {
+	if tc.KeyFile == "" {
+		return "tls.key"
+	}
+	return tc.KeyFile
+}
+
+// ==================================================
+// ACL Config
+// ==================================================
+// +k8s:deepcopy-gen=true
+type ACLConfig struct {
+	// Secret은 ACL 파일이 저장된 Kubernetes Secret을 참조합니다.
+	// PersistentVolumeClaimName보다 우선순위가 높습니다.
+	Secret *corev1.SecretVolumeSource `json:"secret,omitempty"`
+	// PersistentVolumeClaimName은 ACL 파일이 저장된 PVC의 이름입니다.
+	// Secret이 설정되지 않은 경우에만 사용됩니다.
+	PersistentVolumeClaimName *string `json:"persistentVolumeClaim,omitempty"`
 }

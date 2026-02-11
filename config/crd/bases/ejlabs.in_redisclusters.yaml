@@ -70,17 +70,18 @@ spec:
                 description: ===== 보안 및 인증 설정 =====
                 properties:
                   caKey:
-                    description: 'CaKeyFile은 Secret 내에서 CA 인증서 파일의 키 이름입니다 (기본값: "ca.crt").'
                     type: string
                   certKey:
-                    description: 'CertKeyFile은 Secret 내에서 서버 인증서 파일의 키 이름입니다 (기본값:
-                      "tls.crt").'
                     type: string
                   keyKey:
-                    description: 'KeyFile은 Secret 내에서 서버 개인키 파일의 키 이름입니다 (기본값: "tls.key").'
                     type: string
                   secret:
-                    description: Secret은 TLS 인증서가 저장된 Kubernetes Secret을 참조합니다.
+                    description: |-
+                      Adapts a Secret into a volume.
+
+                      The contents of the target Secret's Data field will be presented in a volume
+                      as files using the keys in the Data field as the file names.
+                      Secret volumes support ownership management and SELinux relabeling.
                     properties:
                       defaultMode:
                         description: |-
@@ -146,8 +147,9 @@ spec:
                 type: object
               acl:
                 description: |-
-                  ACLConfig는 Redis Access Control List (ACL) 설정을 정의합니다.
-                  ACL 파일은 Secret 또는 PersistentVolumeClaim에 저장할 수 있으며, Secret이 우선순위가 높습니다.
+                  ==================================================
+                  ACL Config
+                  ==================================================
                 properties:
                   persistentVolumeClaim:
                     description: |-
@@ -229,6 +231,10 @@ spec:
               clusterVersion:
                 default: v7
                 type: string
+              dynamicConfig:
+                items:
+                  type: string
+                type: array
               env:
                 description: ===== 환경 변수 설정 =====
                 items:
@@ -396,23 +402,18 @@ spec:
                   이미지, 리소스, 업데이트 전략, 서비스 설정 등이 포함됩니다.
                 properties:
                   ignoreAnnotations:
-                    description: |-
-                      ===== 기타 설정 =====
-                      IgnoreAnnotations는 패치 비교 시 무시할 어노테이션 목록입니다.
+                    description: ===== 기타 설정 =====
                     items:
                       type: string
                     type: array
                   image:
-                    description: |-
-                      ===== 이미지 설정 =====
-                      Image는 Redis 컨테이너 이미지를 지정합니다.
+                    description: ===== 이미지 설정 =====
                     type: string
                   imagePullPolicy:
-                    description: ImagePullPolicy는 이미지 풀 정책을 설정합니다 (Always, IfNotPresent,
-                      Never).
+                    description: PullPolicy describes a policy for if/when to pull
+                      a container image
                     type: string
                   imagePullSecrets:
-                    description: ImagePullSecrets는 프라이빗 레지스트리 인증을 위한 Secret 목록입니다.
                     items:
                       description: |-
                         LocalObjectReference contains enough information to let you locate the
@@ -431,13 +432,12 @@ spec:
                       x-kubernetes-map-type: atomic
                     type: array
                   minReadySeconds:
-                    description: MinReadySeconds는 Pod가 준비된 것으로 간주되기 전 최소 대기 시간(초)을
-                      설정합니다.
                     format: int32
                     type: integer
                   persistentVolumeClaimRetentionPolicy:
-                    description: PersistentVolumeClaimRetentionPolicy는 PVC 보존 정책을
-                      정의합니다.
+                    description: |-
+                      StatefulSetPersistentVolumeClaimRetentionPolicy describes the policy used for PVCs
+                      created from the StatefulSet VolumeClaimTemplates.
                     properties:
                       whenDeleted:
                         description: |-
@@ -457,7 +457,7 @@ spec:
                     type: object
                   redisSecret:
                     description: ExistingPasswordSecret은 기존 Kubernetes Secret에서 Redis
-                      비밀번호를 참조하는 설정입니다.
+                      비밀번호를 참조하기 위한 설정입니다.
                     properties:
                       key:
                         description: Key는 Secret 내에서 비밀번호가 저장된 키 이름입니다.
@@ -467,10 +467,7 @@ spec:
                         type: string
                     type: object
                   resources:
-                    description: |-
-                      ===== 리소스 및 인증 설정 =====
-                      Resources는 컨테이너의 CPU 및 메모리 리소스 요구사항을 정의합니다.
-                      RedisLeader 또는 RedisFollower에서 Resources가 설정되지 않은 경우 이 값을 사용합니다.
+                    description: ===== 리소스 및 인증 설정 =====
                     properties:
                       claims:
                         description: |-
@@ -529,33 +526,21 @@ spec:
                         type: object
                     type: object
                   service:
-                    description: |-
-                      ===== Service 설정 =====
-                      Service는 Kubernetes Service 설정을 정의합니다.
+                    description: ===== Service 설정 =====
                     properties:
                       additional:
-                        description: |-
-                          Additional는 추가 Service 설정을 정의합니다.
-                          사용자가 추가로 필요한 Service를 생성할 때 사용됩니다.
                         properties:
-                          additionalAnnotations:
+                          annotations:
                             additionalProperties:
                               type: string
-                            description: AdditionalAnnotations는 Service에 추가할 어노테이션을
-                              정의합니다.
                             type: object
                           enabled:
                             default: true
-                            description: Enabled는 이 Service를 생성할지 여부를 설정합니다.
                             type: boolean
                           includeBusPort:
-                            description: IncludeBusPort는 Redis Cluster Bus 포트를 Service에
-                              포함할지 여부를 설정합니다.
                             type: boolean
                           type:
                             default: ClusterIP
-                            description: Type은 Service 타입을 지정합니다 (LoadBalancer, NodePort,
-                              ClusterIP).
                             enum:
                             - LoadBalancer
                             - NodePort
@@ -565,44 +550,10 @@ spec:
                       annotations:
                         additionalProperties:
                           type: string
-                        description: ServiceAnnotations는 기본 Service에 추가할 어노테이션을 정의합니다.
-                        type: object
-                      headless:
-                        description: |-
-                          Headless는 Headless Service (ClusterIP: None) 설정을 정의합니다.
-                          StatefulSet의 Pod 간 통신에 사용됩니다.
-                        properties:
-                          additionalAnnotations:
-                            additionalProperties:
-                              type: string
-                            description: AdditionalAnnotations는 Service에 추가할 어노테이션을
-                              정의합니다.
-                            type: object
-                          enabled:
-                            default: true
-                            description: Enabled는 이 Service를 생성할지 여부를 설정합니다.
-                            type: boolean
-                          includeBusPort:
-                            description: IncludeBusPort는 Redis Cluster Bus 포트를 Service에
-                              포함할지 여부를 설정합니다.
-                            type: boolean
-                          type:
-                            default: ClusterIP
-                            description: Type은 Service 타입을 지정합니다 (LoadBalancer, NodePort,
-                              ClusterIP).
-                            enum:
-                            - LoadBalancer
-                            - NodePort
-                            - ClusterIP
-                            type: string
                         type: object
                       includeBusPort:
-                        description: IncludeBusPort는 기본 Service에 Redis Cluster Bus
-                          포트를 포함할지 여부를 설정합니다.
                         type: boolean
                       serviceType:
-                        description: ServiceType은 기본 Service의 타입을 지정합니다 (LoadBalancer,
-                          NodePort, ClusterIP).
                         enum:
                         - LoadBalancer
                         - NodePort
@@ -610,9 +561,7 @@ spec:
                         type: string
                     type: object
                   updateStrategy:
-                    description: |-
-                      ===== StatefulSet 설정 =====
-                      UpdateStrategy는 StatefulSet의 업데이트 전략을 정의합니다.
+                    description: ===== StatefulSet 설정 =====
                     properties:
                       rollingUpdate:
                         description: RollingUpdate is used to communicate parameters
@@ -890,17 +839,9 @@ spec:
                 description: ===== Redis 설정 =====
                 properties:
                   additionalRedisConfig:
-                    description: AdditionalRedisConfig는 추가 Redis 설정 파일이 포함된 ConfigMap
-                      이름입니다.
+                    description: DynamicConfig           []string `json:"dynamicConfig,omitempty"`
                     type: string
-                  dynamicConfig:
-                    description: DynamicConfig는 런타임에 변경 가능한 Redis 설정 목록입니다.
-                    items:
-                      type: string
-                    type: array
                   maxMemoryPercentOfLimit:
-                    description: MaxMemoryPercentOfLimit는 컨테이너 메모리 제한의 몇 퍼센트를 maxmemory로
-                      사용할지 설정합니다 (1-100).
                     maximum: 100
                     minimum: 1
                     type: integer
@@ -1335,6 +1276,9 @@ spec:
                 - image
                 type: object
               redisFollower:
+                description: |-
+                  RedisFollower는 Follower 노드의 설정을 정의합니다.
+                  Follower는 읽기 전용 복제 노드입니다.
                 properties:
                   affinity:
                     description: ===== 스케줄링 설정 =====
@@ -2775,37 +2719,23 @@ spec:
                         type: integer
                     type: object
                   redisConfig:
-                    description: |-
-                      ===== Redis 설정 =====
-                      RedisConfig는 Follower 노드의 Redis 서버 설정을 정의합니다.
+                    description: ===== Redis 설정 =====
                     properties:
                       additionalRedisConfig:
-                        description: AdditionalRedisConfig는 추가 Redis 설정 파일이 포함된 ConfigMap
-                          이름입니다.
+                        description: DynamicConfig           []string `json:"dynamicConfig,omitempty"`
                         type: string
-                      dynamicConfig:
-                        description: DynamicConfig는 런타임에 변경 가능한 Redis 설정 목록입니다.
-                        items:
-                          type: string
-                        type: array
                       maxMemoryPercentOfLimit:
-                        description: MaxMemoryPercentOfLimit는 컨테이너 메모리 제한의 몇 퍼센트를
-                          maxmemory로 사용할지 설정합니다 (1-100).
                         maximum: 100
                         minimum: 1
                         type: integer
                     type: object
                   replicaCount:
-                    description: |-
-                      ===== 기본 설정 =====
-                      ReplicaCount는 Follower 노드의 레플리카 수를 설정합니다.
-                      설정되지 않은 경우 RedisClusterSpec.ClusterSize를 사용합니다.
+                    description: ===== 기본 설정 =====
                     format: int32
                     type: integer
                   resources:
-                    description: |-
-                      Resources는 Follower 컨테이너의 CPU 및 메모리 리소스 요구사항을 정의합니다.
-                      설정되지 않은 경우 KubernetesConfig.Resources를 사용합니다.
+                    description: ResourceRequirements describes the compute resource
+                      requirements.
                     properties:
                       claims:
                         description: |-
@@ -3083,9 +3013,7 @@ spec:
                 description: ===== Redis 역할별 설정 =====
                 properties:
                   affinity:
-                    description: |-
-                      ===== 스케줄링 설정 =====
-                      Affinity는 Pod 스케줄링을 위한 어피니티 규칙을 정의합니다.
+                    description: ===== 스케줄링 설정 =====
                     properties:
                       nodeAffinity:
                         description: Describes node affinity scheduling rules for
@@ -4523,37 +4451,23 @@ spec:
                         type: integer
                     type: object
                   redisConfig:
-                    description: |-
-                      ===== Redis 설정 =====
-                      RedisConfig는 Leader 노드의 Redis 서버 설정을 정의합니다.
+                    description: ===== Redis 설정 =====
                     properties:
                       additionalRedisConfig:
-                        description: AdditionalRedisConfig는 추가 Redis 설정 파일이 포함된 ConfigMap
-                          이름입니다.
+                        description: DynamicConfig           []string `json:"dynamicConfig,omitempty"`
                         type: string
-                      dynamicConfig:
-                        description: DynamicConfig는 런타임에 변경 가능한 Redis 설정 목록입니다.
-                        items:
-                          type: string
-                        type: array
                       maxMemoryPercentOfLimit:
-                        description: MaxMemoryPercentOfLimit는 컨테이너 메모리 제한의 몇 퍼센트를
-                          maxmemory로 사용할지 설정합니다 (1-100).
                         maximum: 100
                         minimum: 1
                         type: integer
                     type: object
                   replicaCount:
-                    description: |-
-                      ===== 기본 설정 =====
-                      ReplicaCount는 Leader 노드의 레플리카 수를 설정합니다.
-                      설정되지 않은 경우 RedisClusterSpec.ClusterSize를 사용합니다.
+                    description: ===== 기본 설정 =====
                     format: int32
                     type: integer
                   resources:
-                    description: |-
-                      Resources는 Leader 컨테이너의 CPU 및 메모리 리소스 요구사항을 정의합니다.
-                      설정되지 않은 경우 KubernetesConfig.Resources를 사용합니다.
+                    description: ResourceRequirements describes the compute resource
+                      requirements.
                     properties:
                       claims:
                         description: |-
@@ -4832,6 +4746,10 @@ spec:
               sidecars:
                 description: ===== 컨테이너 설정 =====
                 items:
+                  description: |-
+                    ==================================================
+                    Sidecar & Exporter
+                    ==================================================
                   properties:
                     command:
                       items:
@@ -5364,7 +5282,11 @@ spec:
                   type: object
                 type: array
               storage:
-                description: 레디스 클러스터 전용 스토리지 설정
+                description: |-
+                  ==================================================
+                  Cluster Storage
+                  ==================================================
+                  레디스 클러스터 전용 스토리지 설정
                 properties:
                   additionalVolumeAndMounts:
                     description: 유저 전용 볼륨 마운트 설정
@@ -7358,7 +7280,7 @@ spec:
                         type: boolean
                       keepAfterDelete:
                         type: boolean
-                      volumeClaimTemplate:
+                      persistentVolumeClaim:
                         description: PersistentVolumeClaim is a user's request for
                           and claim to a persistent volume
                         properties:
@@ -7783,7 +7705,7 @@ spec:
                       enabled:
                         default: false
                         type: boolean
-                      volumeClaimTemplate:
+                      persistentVolumeClaim:
                         description: PersistentVolumeClaim is a user's request for
                           and claim to a persistent volume
                         properties:

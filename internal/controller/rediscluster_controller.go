@@ -91,8 +91,8 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// replica count
-	desiredLeaderReplicas := cr.Spec.GetLeaderReplicaCount()
-	desiredFollwerReplicas := cr.Spec.GetFollowerReplicaCount()
+	desiredLeaderReplicas := cr.Spec.GetReplicaCount("leader")
+	desiredFollwerReplicas := cr.Spec.GetReplicaCount("follower")
 	desiredTotalReplicas := desiredLeaderReplicas + desiredFollwerReplicas
 
 	// ================================================
@@ -202,7 +202,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// err = cluster.ReconcileRedisPodDisruptionBudget(ctx, instance, "leader", instance.Spec.RedisLeader.PodDisruptionBudget, r.K8sClient)
 	// if err != nil {
-	// 	return intctrlutil.RequeueE(ctx, err, "")
+	// return intctrlutil.RequeueE(ctx, err, "")
 	// }
 
 	// leader 팟들이 모두 준비완료 되었을때 실행해야함. 준비되지 않았을 때 실행하면
@@ -295,21 +295,20 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		currentLeaderCount := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
 		if currentLeaderCount != desiredLeaderReplicas {
 			logger.Info("Not all leader are part of the cluster...", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas)
-			if currentLeaderCount <= 2 {
+			if currentLeaderCount <= 1 {
+				// 클러스터 미형성 상태: leader-0만 자기 자신을 master로 인식 (cluster_known_nodes == 1)
+				// redis-cli --cluster create로 모든 leader를 포함한 새 클러스터를 생성합니다.
 				result, err := cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
 				if err != nil {
 					logger.Error(err, "failed to create redis cluster")
-					// return intctrlutil.RequeueE(ctx, err, "failed to create redis cluster")
+					return intctrlutil.RequeueE(ctx, err, "failed to create redis cluster")
 				}
 				logger.Info("Redis cluster creation result", "Result", result)
-			} else {
-				if currentLeaderCount < desiredLeaderReplicas {
-					// Scale up the cluster
-					// Step 2 : Add Redis Node
-					cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr)
-					// Step 3 Rebalance the cluster using the empty masters
-					cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr)
-				}
+			} else if currentLeaderCount < desiredLeaderReplicas {
+				// 클러스터가 이미 형성된 상태에서 스케일 업: 새 leader 노드를 기존 클러스터에 추가합니다.
+				// redis-cli --cluster add-node로 개별 노드를 추가한 후 슬롯을 재배분합니다.
+				cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr)
+				cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr)
 			}
 		} else {
 			if desiredFollwerReplicas > 0 {

@@ -44,11 +44,14 @@ spec:
           - manager
           - --leader-elect
           - --health-probe-bind-address=:8081
+        # image: 192.168.0.51:5000/redis-operator:dev
         image: redis-operator:latest
+        # imagePullPolicy: Always
         imagePullPolicy: IfNotPresent
         name: manager
         env:
         - name: INIT_CONTAINER_IMAGE
+          # value: 192.168.0.51:5000/redis-operator:dev
           value: redis-operator:latest
         ports: []
         securityContext:
