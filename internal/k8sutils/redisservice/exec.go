@@ -84,7 +84,12 @@ func executeCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 		Tty:    false,
 	})
 	if err != nil {
-		return execOut.String(), fmt.Errorf("execute command with error: %w, stderr: %s", err, execErr.String())
+		out := execOut.String()
+		errOut := execErr.String()
+		return out, fmt.Errorf(
+			"execute command failed: %w; stdout: %s; stderr: %s",
+			err, out, errOut,
+		)
 	}
 	return execOut.String(), nil
 }

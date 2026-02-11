@@ -188,10 +188,8 @@ func RebalanceRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, 
 func executeClusterResetCommand(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeType string) error {
 	var replicaCount int32
 	switch nodeType {
-	case "leader":
-		replicaCount = cr.Spec.GetLeaderReplicaCount()
-	case "follower":
-		replicaCount = cr.Spec.GetFollowerReplicaCount()
+	case "leader", "follower":
+		replicaCount = cr.Spec.GetReplicaCount(nodeType)
 	default:
 		log.FromContext(ctx).Error(fmt.Errorf("unknown node type"), "Unknown node type", "nodeType", nodeType)
 		return fmt.Errorf("unknown node type: %s", nodeType)
@@ -271,7 +269,7 @@ func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr 
 	cmd := RedisInvocation{
 		Command: []string{"redis-cli", "--cluster", "create"},
 	}
-	replicas := cr.Spec.GetLeaderReplicaCount()
+	replicas := cr.Spec.GetReplicaCount("leader")
 	for podIndex := 0; podIndex < int(replicas); podIndex++ {
 		rd := redisservice.RedisDetails{
 			PodName:   k8smeta.GetPodName(cr.Name, "leader", podIndex),
@@ -280,7 +278,7 @@ func CreateRedisCluster(ctx context.Context, k8sClient kubernetes.Interface, cr 
 		endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, rd)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Failed to get endpoint for leader pod", "Pod", rd.PodName, "Index", podIndex)
-			return
+			return "", err
 		}
 		cmd.AddCommand([]string{endpoint})
 	}
@@ -323,8 +321,8 @@ func AddRedisLeaderNodeToCluster(ctx context.Context, k8sClient kubernetes.Inter
 
 func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.Interface, cr *rcvb2.RedisCluster) {
 	var followerEndpointIP string
-	followerCounts := cr.Spec.GetFollowerReplicaCount()
-	leaderCounts := cr.Spec.GetLeaderReplicaCount()
+	followerCounts := cr.Spec.GetReplicaCount("follower")
+	leaderCounts := cr.Spec.GetReplicaCount("leader")
 	followerPerLeader := followerCounts / leaderCounts
 
 	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
@@ -460,7 +458,7 @@ func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, c
 	// CLUSTER MEET 명령어는 여전히 IP 주소만 지원합니다.
 	// 따라서 항상 Pod IP 방식을 사용합니다.
 
-	port := strconv.Itoa(*cr.Spec.ClientPort)
+	port := strconv.Itoa(cr.GetClientPort())
 
 	{
 		// 모든 StatefulSet Pod IP로 일괄 MEET
@@ -468,8 +466,8 @@ func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, c
 
 		// leader와 follower StatefulSet의 모든 Pod IP 수집
 		allPodIPs := []string{}
-		leaderReplicas := cr.Spec.GetLeaderReplicaCount()
-		followerReplicas := cr.Spec.GetFollowerReplicaCount()
+		leaderReplicas := cr.Spec.GetReplicaCount("leader")
+		followerReplicas := cr.Spec.GetReplicaCount("follower")
 
 		// Leader Pod IPs
 		for i := 0; i < int(leaderReplicas); i++ {
@@ -566,10 +564,10 @@ func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interfa
 		return nil
 	}
 
-	if err := applyToPods("leader", cr.Spec.GetLeaderReplicaCount()); err != nil {
+	if err := applyToPods("leader", cr.Spec.GetReplicaCount("leader")); err != nil {
 		return err
 	}
-	return applyToPods("follower", cr.Spec.GetFollowerReplicaCount())
+	return applyToPods("follower", cr.Spec.GetReplicaCount("follower"))
 }
 
 func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) {
@@ -603,7 +601,7 @@ func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interfa
 
 func RedisClusterStatusHealth(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) bool {
 	logger := log.FromContext(ctx)
-	leaderReplicas := cr.Spec.GetLeaderReplicaCount()
+	leaderReplicas := cr.Spec.GetReplicaCount("leader")
 
 	// Try to check cluster health from multiple leader nodes with retry logic
 	var lastErr error
@@ -646,7 +644,7 @@ func checkClusterHealth(ctx context.Context, client kubernetes.Interface, cr *rc
 	cmd := RedisInvocation{
 		Command: []string{
 			"redis-cli", "--cluster", "check",
-			fmt.Sprintf("127.0.0.1:%d", *cr.Spec.ClientPort)},
+			fmt.Sprintf("127.0.0.1:%d", cr.GetClientPort())},
 	}
 	cmd.AddAuthAndTLS(ctx, client, cr)
 

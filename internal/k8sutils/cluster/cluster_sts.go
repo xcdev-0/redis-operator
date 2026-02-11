@@ -17,19 +17,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const (
-	// Redis 클러스터 버스 포트 오프셋 (클라이언트 포트 + 10000)
-	redisClusterBusPortOffset = 10000
-)
-
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 사용됩니다.
 // RedisClusterRoleParams는 Redis Cluster StatefulSet 생성을 위한 역할별(Leader/Follower) 차별화 파라미터를 담는 구조체입니다.
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 각각 다른 설정을 전달하기 위해 사용됩니다.
 type RedisClusterRoleParams struct {
 	// 공통 설정
-	Role           string  // Redis Cluster 역할 ("leader" 또는 "follower")
-	ExternalConfig *string // 외부 ConfigMap 이름 (추가 Redis 설정)
-	ReplicaCounts  int32   // 레플리카 수
+	Role                  string  // Redis Cluster 역할 ("leader" 또는 "follower")
+	AdditionalRedisConfig *string // 외부 ConfigMap 이름 (추가 Redis 설정)
+	ReplicaCounts         int32   // 레플리카 수
 
 	// Pod 레벨 설정 (PodSpec에 적용)
 	Affinity                      *corev1.Affinity                  // Pod 어피니티 규칙 (노드/Pod 간 선호도)
@@ -45,7 +40,7 @@ type RedisClusterRoleParams struct {
 	LivenessProbe            *corev1.Probe                // Liveness Probe 설정 (컨테이너 생존 상태 확인)
 }
 
-func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
 	stsName := k8smeta.GetStatefulSetName(cr.Name, redisClusterRoleParams.Role)
 	stsLabels := k8smeta.GetRedisClusterLabels(&k8smeta.RedisLabels{
 		STSName:          stsName,
@@ -62,7 +57,7 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx
 		Annotations: stsAnnotations,
 	})
 	stsParams := generateStatefulSetParams(cr, redisClusterRoleParams)
-	containerParams, err := generateRedisClusterContainerParams(ctx, cl, cr, redisClusterRoleParams)
+	containerParams, err := generateRedisClusterContainerParams(cr, redisClusterRoleParams)
 	if err != nil {
 		return err
 	}
@@ -74,7 +69,7 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSetup(ctx
 	err = statefulset.CreateOrUpdateStateFul(
 		ctx,
 		cl,
-		&statefulset.StatefulSetRequest{
+		&statefulset.STSCreateOrUpdateRequest{
 			Namespace:       cr.Namespace,
 			StsObjectMeta:   stsObjectMeta,
 			OwnerReference:  k8smeta.RedisClusterAsOwner(cr),
@@ -102,7 +97,6 @@ func generateStatefulSetParams(
 		// 기본 설정
 		Replicas:           &roleParams.ReplicaCounts,
 		ClusterModeEnabled: true,
-		ClusterVersion:     cr.Spec.ClusterVersion,
 		MinReadySeconds:    minreadyseconds,
 
 		// Pod 레벨 설정 (PodSpec에 적용)
@@ -130,20 +124,15 @@ func generateStatefulSetParams(
 		stsParams.ImagePullSecrets = cr.Spec.KubernetesConfig.ImagePullSecrets
 	}
 	if cr.Spec.IsDataPersistenceEnabled() {
-		stsParams.DataPVC = cr.Spec.Storage.Data.VolumeClaimTemplate
+		stsParams.DataPVC = cr.Spec.Storage.Data.PersistentVolumeClaim
 	}
 	if cr.Spec.IsNodePersistenceEnabled() {
-		stsParams.NodeConfPVC = cr.Spec.Storage.Node.VolumeClaimTemplate
+		stsParams.NodeConfPVC = cr.Spec.Storage.Node.PersistentVolumeClaim
 	}
 	// 스토리지 설정 (데이터 저장용 PVC 및 노드 설정용 PVC)
 	if cr.Spec.Storage.AdditionalVolumeAndMounts.Volumes != nil {
 		stsParams.AdditionalVolumes = cr.Spec.Storage.AdditionalVolumeAndMounts.Volumes
 	}
-	// 외부 ConfigMap 설정 (추가 Redis 설정 파일)
-	if roleParams.ExternalConfig != nil {
-		stsParams.ExternalConfig = roleParams.ExternalConfig
-	}
-
 	// StatefulSet 재생성 어노테이션 확인
 	// 변경 불가능한 필드(VolumeClaimTemplate 등) 변경 시 StatefulSet을 재생성해야 합니다.
 	if value, found := cr.GetAnnotations()[consts.AnnotationKeyRecreateStatefulset]; found && value == "true" {
@@ -186,18 +175,18 @@ func getDeletionPropagationStrategy(annotations map[string]string) *metav1.Delet
 // Container 파라미터 생성
 // ========================================================
 func generateRedisClusterContainerParams(
-	ctx context.Context,
-	cl kubernetes.Interface,
 	cr *rcvb2.RedisCluster,
 	roleParams RedisClusterRoleParams,
 ) (statefulset.ContainerParameters, error) {
 	params := statefulset.ContainerParameters{
 		RedisSetupType:          "cluster",
+		ClusterVersion:          cr.Spec.ClusterVersion,
+		AdditionalRedisConfig:   roleParams.AdditionalRedisConfig,
 		Image:                   cr.Spec.KubernetesConfig.Image,
 		ImagePullPolicy:         cr.Spec.KubernetesConfig.ImagePullPolicy,
 		Resources:               roleParams.Resources,
 		SecurityContext:         roleParams.ContainerSecurityContext,
-		Port:                    cr.Spec.ClientPort,
+		Port:                    cr.GetClientPort(),
 		HostPort:                cr.Spec.HostPort,
 		MaxMemoryPercentOfLimit: cr.Spec.GetRedisMaxPercentOfLimitConfig(roleParams.Role),
 		EnvVars:                 cr.Spec.EnvVars,

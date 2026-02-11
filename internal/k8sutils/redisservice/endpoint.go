@@ -2,7 +2,6 @@ package redisservice
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -10,10 +9,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/samber/lo"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/envs"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -82,7 +79,7 @@ func GetEndPointIP(ctx context.Context, client kubernetes.Interface, cr *rcvb2.R
 // Operator는 클러스터 내부에서 실행되므로 ServiceType과 무관하게
 // Pod IP 또는 FQDN을 사용하여 직접 통신합니다.
 func getEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
-	port := *cr.Spec.ClientPort
+	port := cr.GetClientPort()
 	var host string
 
 	// Redis v7에서는 FQDN 사용 (IP 변경에 더 안정적)
@@ -99,27 +96,27 @@ func getEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.Red
 			host = "[" + host + "]"
 		}
 	}
-	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-		svc, err := getService(ctx, client, cr.Namespace, rd.PodName) //nodeport 서비스는 팟과 이름 같음
-		if err != nil {
-			return nil, err
-		}
-		if svc.Spec.Type != corev1.ServiceTypeNodePort {
-			return nil, errors.New("service type mismatch")
-		}
-		svcPort, ok := lo.Find(svc.Spec.Ports, func(item corev1.ServicePort) bool {
-			return item.Name == consts.RedisClientPortName // redis-client
-		})
-		if ok {
-			port = int(svcPort.NodePort)
-		}
-		pod, err := client.CoreV1().Pods(rd.Namespace).Get(ctx, rd.PodName, metav1.GetOptions{})
-		if err != nil {
-			log.FromContext(ctx).Error(err, "")
-			return nil, err
-		}
-		host = pod.Status.HostIP
-	}
+	// if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
+	// 	svc, err := getService(ctx, client, cr.Namespace, rd.PodName) //nodeport 서비스는 팟과 이름 같음
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	if svc.Spec.Type != corev1.ServiceTypeNodePort {
+	// 		return nil, errors.New("service type mismatch")
+	// 	}
+	// 	svcPort, ok := lo.Find(svc.Spec.Ports, func(item corev1.ServicePort) bool {
+	// 		return item.Name == consts.RedisClientPortName // redis-client
+	// 	})
+	// 	if ok {
+	// 		port = int(svcPort.NodePort)
+	// 	}
+	// 	pod, err := client.CoreV1().Pods(rd.Namespace).Get(ctx, rd.PodName, metav1.GetOptions{})
+	// 	if err != nil {
+	// 		log.FromContext(ctx).Error(err, "")
+	// 		return nil, err
+	// 	}
+	// 	host = pod.Status.HostIP
+	// }
 	return &EndpointInfo{
 		Host: host,
 		Port: strconv.Itoa(port),

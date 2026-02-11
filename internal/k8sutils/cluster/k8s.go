@@ -2,97 +2,21 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/banzaicloud/k8s-objectmatcher/patch"
+	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	utilmaps "github.com/xcdev-0/redis-operator/internal/util/maps"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
+	pkglabels "k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
-
-// ServiceOptions contains all options for creating or updating a Kubernetes service
-type ServiceOptions struct {
-	Namespace            string                       // Kubernetes namespace where the service will be created
-	ServiceObjectMeta    metav1.ObjectMeta            // Service metadata (name, labels, annotations)
-	SelectorLabels       map[string]string            // Selector labels for the service
-	OwnerRef             metav1.OwnerReference        // Owner reference for garbage collection
-	ExporterPortProvider k8smeta.ExporterPortProvider // Function to get Redis exporter port if enabled
-	Headless             bool                         // Whether to create a headless service (ClusterIP: None)
-	ServiceType          string                       // Service type: "ClusterIP", "NodePort", or "LoadBalancer"
-	ClientPort           int                          // Redis client port number
-	K8sClient            kubernetes.Interface         // Kubernetes client for API operations
-	ExtraPorts           []corev1.ServicePort         // Additional ports to expose (e.g., Redis bus port)
-}
-
-func generateServiceDef(opts ServiceOptions) *corev1.Service {
-	service := &corev1.Service{
-		TypeMeta:   k8smeta.GenerateTypeMeta("Service", "v1"),
-		ObjectMeta: opts.ServiceObjectMeta,
-		Spec: corev1.ServiceSpec{
-			Type:      generateServiceType(opts.ServiceType),
-			ClusterIP: "", // Empty string means Kubernetes will assign a ClusterIP
-			Selector:  utilmaps.Copy(opts.SelectorLabels),
-			Ports: []corev1.ServicePort{
-				{
-					Name:       consts.RedisClientPortName, // redis-client
-					Port:       int32(opts.ClientPort),
-					TargetPort: intstr.FromInt(opts.ClientPort),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
-		},
-	}
-
-	// Set ClusterIP to "None" for headless services (used by StatefulSets)
-	if opts.Headless {
-		service.Spec.ClusterIP = "None"
-	}
-
-	// Add Redis Exporter port if metrics are enabled
-	if exporterPort, ok := opts.ExporterPortProvider(); ok {
-		redisExporterService := enableMetricsPort(exporterPort)
-		service.Spec.Ports = append(service.Spec.Ports, *redisExporterService)
-	}
-
-	// Add extra ports (e.g., Redis Cluster bus port)
-	if len(opts.ExtraPorts) > 0 {
-		service.Spec.Ports = append(service.Spec.Ports, opts.ExtraPorts...)
-	}
-
-	// Set owner reference for garbage collection
-	k8smeta.AddOwnerRefToObject(service, opts.OwnerRef)
-	return service
-}
-
-// enableMetricsPort creates a ServicePort for Redis Exporter metrics endpoint
-func enableMetricsPort(port int) *corev1.ServicePort {
-	return &corev1.ServicePort{
-		Name:       consts.RedisExporterPortName,
-		Port:       int32(port),
-		TargetPort: intstr.FromInt(port),
-		Protocol:   corev1.ProtocolTCP,
-	}
-}
-
-// generateServiceType converts a string service type to Kubernetes ServiceType
-// Defaults to ClusterIP if an unknown type is provided
-func generateServiceType(k8sServiceType string) corev1.ServiceType {
-	switch k8sServiceType {
-	case "LoadBalancer":
-		return corev1.ServiceTypeLoadBalancer
-	case "NodePort":
-		return corev1.ServiceTypeNodePort
-	case "ClusterIP":
-		return corev1.ServiceTypeClusterIP
-	default:
-		return corev1.ServiceTypeClusterIP
-	}
-}
 
 // createService creates a new Kubernetes Service
 func createService(ctx context.Context, kusClient kubernetes.Interface, namespace string, service *corev1.Service) error {
@@ -136,22 +60,6 @@ func getServicePortByName(svc *corev1.Service, portName string) *corev1.ServiceP
 		}
 	}
 	return nil
-}
-
-func createOrUpdateService(ctx context.Context, opts ServiceOptions) error {
-	serviceDef := generateServiceDef(opts)
-	storedService, err := getService(ctx, opts.K8sClient, opts.Namespace, opts.ServiceObjectMeta.GetName())
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Set last applied annotation for future comparisons
-			if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(serviceDef); err != nil {
-				log.FromContext(ctx).Error(err, "Unable to patch redisutils service with compare annotations")
-			}
-			return createService(ctx, opts.K8sClient, opts.Namespace, serviceDef)
-		}
-		return err
-	}
-	return patchService(ctx, storedService, serviceDef, opts.Namespace, opts.K8sClient)
 }
 
 func patchService(ctx context.Context, storedService *corev1.Service, newService *corev1.Service, namespace string, cl kubernetes.Interface) error {
@@ -201,5 +109,131 @@ func patchService(ctx context.Context, storedService *corev1.Service, newService
 
 	// 변경사항이 없으면 업데이트를 건너뜀
 	log.FromContext(ctx).V(1).Info("Redis service is already in-sync")
+	return nil
+}
+
+// UpdateRedisRoleLabel는 Pod의 Redis 역할(리더/팔로워)에 따라 라벨을 업데이트합니다.
+func UpdateRedisRoleLabels(
+	ctx context.Context,
+	k8sclient kubernetes.Interface,
+	cr *rcvb2.RedisCluster,
+) error {
+	log.FromContext(ctx).Info("Starting UpdateRedisRoleLabels", "cluster", cr.Name)
+
+	for _, stsRole := range []string{"leader", "follower"} {
+		log.FromContext(ctx).V(1).Info("Processing role", "role", stsRole)
+
+		// 안정적인 라벨만 사용 (StatefulSet selector와 일관성 유지)
+		stableLabels := k8smeta.GetRedisClusterStableLabels(
+			k8smeta.GetStatefulSetName(cr.Name, stsRole),
+			stsRole,
+			cr.Name,
+		)
+
+		selector := pkglabels.Set(stableLabels).String()
+		log.FromContext(ctx).V(1).Info("Using selector", "selector", selector, "role", stsRole)
+
+		if err := updateRedisRoleLabel(ctx, k8sclient, cr, selector); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to update redis role labels", "role", stsRole)
+			return err
+		}
+	}
+
+	log.FromContext(ctx).Info("Completed UpdateRedisRoleLabels", "cluster", cr.Name)
+	return nil
+}
+
+func updateRedisRoleLabel(
+	ctx context.Context,
+	k8sclient kubernetes.Interface,
+	cr *rcvb2.RedisCluster,
+	selector string) error {
+
+	pods, err := k8sclient.CoreV1().Pods(cr.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector,
+	})
+
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list pods", "selector", selector)
+		return err
+	}
+
+	log.FromContext(ctx).V(1).Info("Found pods to update", "count", len(pods.Items), "selector", selector)
+
+	patchFunc := func(pod string, patchBs []byte) func() error {
+		return func() error {
+			_, err := k8sclient.
+				CoreV1().
+				Pods(cr.Namespace).
+				Patch(ctx, pod, types.JSONPatchType, patchBs, metav1.PatchOptions{})
+			return err
+		}
+	}
+
+	// sts 역할과 실제 클러스터 내 역할이 같은지 확인
+	// 다르다면 실제 역할로 레이블 업데이트
+	// redis-current-role: master/slave
+	for _, pod := range pods.Items {
+		log.FromContext(ctx).V(1).Info("Checking pod role", "pod", pod.Name)
+
+		isMaster, err := IsLeaderNode(ctx, k8sclient, cr, pod.Name)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "failed to check redis role, skipping pod", "pod", pod.Name)
+			continue
+		}
+
+		newRole := consts.LabelValueSlave
+		if isMaster {
+			newRole = consts.LabelValueMaster
+		}
+
+		log.FromContext(ctx).V(1).Info("Pod role determined",
+			"pod", pod.Name,
+			"isMaster", isMaster,
+			"newRole", newRole)
+
+		oldRole := pod.Labels[consts.LabelKeyCurrentRole]
+
+		log.FromContext(ctx).V(1).Info("Comparing roles",
+			"pod", pod.Name,
+			"oldRole", oldRole,
+			"newRole", newRole)
+
+		if oldRole != newRole {
+			// JSON Patch를 사용하여 Pod 라벨 업데이트
+			// 레이블이 이미 존재하면 "replace", 없으면 "add" 사용
+			op := "add"
+			if oldRole != "" {
+				op = "replace"
+			}
+
+			log.FromContext(ctx).Info("Updating pod role label",
+				"pod", pod.Name,
+				"operation", op,
+				"oldRole", oldRole,
+				"newRole", newRole)
+
+			patch := []byte(
+				fmt.Sprintf(`[{"op": "%s", "path": "/metadata/labels/%s", "value": "%s"}]`,
+					op, consts.LabelKeyCurrentRole, newRole))
+
+			log.FromContext(ctx).V(1).Info("Patch command", "pod", pod.Name, "patch", string(patch))
+
+			rErr := retry.RetryOnConflict(retry.DefaultRetry, patchFunc(pod.Name, patch))
+			if rErr != nil {
+				log.FromContext(ctx).Error(rErr, "Failed to patch pod", "pod", pod.Name)
+				return fmt.Errorf("failed to update pod role label: %w", rErr)
+			}
+			log.FromContext(ctx).Info("Successfully updated pod role label",
+				"pod", pod.Name,
+				"oldRole", oldRole,
+				"newRole", newRole,
+			)
+		} else {
+			log.FromContext(ctx).V(1).Info("Skipping pod, role unchanged",
+				"pod", pod.Name,
+				"role", newRole)
+		}
+	}
 	return nil
 }

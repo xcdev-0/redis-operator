@@ -28,11 +28,11 @@ const (
 )
 
 const (
-	VolumeNameConfig         = "config"
-	VolumeNameExternalConfig = "external-config"
-	VolumeNameNodeConf       = "node-conf"
-	VolumeNameData           = "data-persistence" // 데이터 영속성 볼륨 이름
-	VolumeNameTLSCerts       = "tls-certs"
-	VolumeNameACLSecret      = "acl-secret"
-	VolumeNameACLPVC         = "acl-pvc"
+	VolumeNameConfig                = "config"
+	VolumeNameAdditionalRedisConfig = "external-config"
+	VolumeNameNodeConf              = "node-conf"
+	VolumeNameData                  = "data-persistence" // 데이터 영속성 볼륨 이름
+	VolumeNameTLSCerts              = "tls-certs"
+	VolumeNameACLSecret             = "acl-secret"
+	VolumeNameACLPVC                = "acl-pvc"
 )
