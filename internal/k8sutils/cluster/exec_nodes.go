@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -13,14 +14,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) int32 {
-	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
-	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
-	defer redisClient.Close()
+// getClusterNodesWithFallback는 leader pod들에 순차적으로 접속하여 CLUSTER NODES를 조회합니다.
+// leader-0이 다운된 경우에도 다른 leader pod에서 클러스터 상태를 조회할 수 있습니다.
+func getClusterNodesWithFallback(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) ([]ClusterNode, error) {
+	leaderCount := cr.Spec.GetReplicaCount("leader")
+	logger := log.FromContext(ctx)
+	var lastErr error
+	for i := 0; i < int(leaderCount); i++ {
+		podName := k8smeta.GetPodName(cr.Name, "leader", i)
+		redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, podName)
+		if redisClient == nil {
+			lastErr = fmt.Errorf("failed to create redis client for %s", podName)
+			logger.V(1).Info("Skipping pod, failed to create redis client", "Pod", podName)
+			continue
+		}
+		nodes, err := GetClusterNodes(ctx, redisClient)
+		redisClient.Close()
+		if err == nil {
+			return nodes, nil
+		}
+		lastErr = err
+		logger.V(1).Info("Failed to get cluster nodes from pod, trying next", "Pod", podName, "Error", err)
+	}
+	return nil, fmt.Errorf("failed to get cluster nodes from any leader pod: %w", lastErr)
+}
 
-	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
+		return 0, err
 	}
 
 	count := 0
@@ -29,16 +51,13 @@ func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface,
 			count++
 		}
 	}
-	return int32(count)
+	return int32(count), nil
 }
-func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) int32 {
-	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
-	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
-	defer redisClient.Close()
 
-	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
+		return 0, err
 	}
 
 	count := 0
@@ -47,19 +66,16 @@ func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interfac
 			count++
 		}
 	}
-	return int32(count)
+	return int32(count), nil
 }
-func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, flagRole string) int32 {
-	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
-	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
-	defer redisClient.Close()
 
-	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, flagRole string) (int32, error) {
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to get cluster nodes")
+		return 0, err
 	}
 
-	return int32(len(clusterNodes))
+	return int32(len(clusterNodes)), nil
 }
 
 // getRedisNodeID는 지정된 Pod의 Redis 노드 ID를 반환합니다.
@@ -132,9 +148,7 @@ func getAttachedFollowerNodeIDs(ctx context.Context, redisClient *redis.Client, 
 }
 
 func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
-	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, cr.Name+"-leader-0")
-	defer redisClient.Close()
-	clusterNodes, err := GetClusterNodes(ctx, redisClient)
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
 		return 0, err
 	}

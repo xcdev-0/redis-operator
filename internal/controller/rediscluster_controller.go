@@ -109,7 +109,11 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 		// 실제 Redis 클러스터에 있는 Leader 노드 수를 확인합니다.
 		// StatefulSet의 리플리카 수와 실제 클러스터의 노드 수가 일치해야 다운스케일을 진행합니다.
-		if clusterLeaderNodeCount := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr); clusterLeaderNodeCount == currentLeaderReplicas {
+		clusterLeaderNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+		if err != nil {
+			return intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
+		}
+		if clusterLeaderNodeCount == currentLeaderReplicas {
 			// Kubernetes Event를 기록하여 다운스케일 시작을 알립니다.
 			r.Recorder.Event(cr, corev1.EventTypeNormal, rcvb2.EventReasonRedisClusterDownscale, "Redis cluster is downscaling...")
 			logger.Info("Redis cluster is downscaling...", "Current.LeaderReplicas", currentLeaderReplicas, "Desired.LeaderReplicas", desiredLeaderReplicas)
@@ -272,27 +276,34 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 4. 단일 노드일 때 leader-0 노드에 모든 슬롯 할당 (테스트용)
 	// ================================================
 	// 아직 클러스터 안에 포함되지는 않음
-	if desiredLeaderReplicas == 1 {
-		if slotsAssigned, err := cluster.CheckClusterAllSlotsAssigned(ctx, r.K8sClient, cr); err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to get cluster slots")
-		} else {
-			if !slotsAssigned {
-				// cluster reset + cluster addslots 실행
-				logger.Info("Start creating a single-node redis cluster")
-				cluster.AddAllSlotsToSingleNode(ctx, r.K8sClient, cr)
-			}
-		}
-	}
+	// if desiredLeaderReplicas == 1 {
+	// 	if slotsAssigned, err := cluster.CheckClusterAllSlotsAssigned(ctx, r.K8sClient, cr); err != nil {
+	// 		return intctrlutil.RequeueE(ctx, err, "failed to get cluster slots")
+	// 	} else {
+	// 		if !slotsAssigned {
+	// 			// cluster reset + cluster addslots 실행
+	// 			logger.Info("Start creating a single-node redis cluster")
+	// 			cluster.AddAllSlotsToSingleNode(ctx, r.K8sClient, cr)
+	// 		}
+	// 	}
+	// }
 
 	// 어드미션 웹훅으로 리더 노드 최소 1개 또는 최소 3개이상으로 강제할거임
 	// ================================================
 	// 5. 클러스터 초기화
 	// ================================================
 	// 목표 leader, follower 수에 맞게 클러스터를 초기화합니다.
-	if nc := cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, ""); nc != desiredTotalReplicas {
+	nc, err := cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, "")
+	if err != nil {
+		return intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
+	}
+	if nc != desiredTotalReplicas {
 		logger.Info("Creating redis cluster by executing cluster creation commands")
 		// 실제로 레디스 클러스터내에서 마스터 역할을 하는 개수
-		currentLeaderCount := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+		currentLeaderCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+		if err != nil {
+			return intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
+		}
 		if currentLeaderCount != desiredLeaderReplicas {
 			logger.Info("Not all leader are part of the cluster...", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas)
 			if currentLeaderCount <= 1 {
@@ -307,13 +318,19 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			} else if currentLeaderCount < desiredLeaderReplicas {
 				// 클러스터가 이미 형성된 상태에서 스케일 업: 새 leader 노드를 기존 클러스터에 추가합니다.
 				// redis-cli --cluster add-node로 개별 노드를 추가한 후 슬롯을 재배분합니다.
-				cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr)
-				cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr)
+				if err := cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr); err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to add leader node to cluster")
+				}
+				if err := cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to rebalance empty masters")
+				}
 			}
 		} else {
 			if desiredFollwerReplicas > 0 {
 				logger.Info("All leader are part of the cluster, adding follower/replicas", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
-				cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr)
+				if err := cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr); err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to execute replication command")
+				}
 			} else {
 				logger.Info("no follower/replicas configured, skipping replication configuration", "Leaders.Count", currentLeaderCount, "Leader.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
 			}
@@ -395,7 +412,9 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// ========================================================================
 	// 모든 노드가 클러스터에 포함되었는지 확인한 후, 슬롯이 할당되지 않은 Empty Master 노드가 있는지 확인합니다.
 	// Empty Master는 클러스터에 포함되어 있지만 슬롯이 없는 노드입니다 (스케일 아웃 후 발생할 수 있음).
-	if cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, "") == desiredTotalReplicas {
+	if ncCheck, err := cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, ""); err != nil {
+		return intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
+	} else if ncCheck == desiredTotalReplicas {
 		// Empty Master가 발견되면 자동으로 재밸런싱하여 슬롯을 분배합니다.
 		cluster.RebalanceIfEmptyMasterExists(ctx, r.K8sClient, cr)
 	}
