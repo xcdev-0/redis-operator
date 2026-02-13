@@ -82,8 +82,10 @@ func addFlags(cmd *cobra.Command, opts *managerOptions) {
 	// Webhook 활성화
 	cmd.Flags().BoolVar(&opts.enableWebhooks, "enable-webhooks", envs.IsWebhookEnabled(), "Enable webhooks")
 
+	// 사용자가 입력한 플래그 값을 우리가 미리 만든 변수 주소(&opts...)에 직접 배달해 줌
 	cmd.Flags().IntVar(&opts.maxConcurrentReconciles, "max-concurrent-reconciles", 1, "Max concurrent reconciles")
 
+	// 변수 주소를 받지 않음. 대신 코브라가 내부적으로 메모리 어딘가에 값을 저장해 둡니다.
 	cmd.Flags().Duration(
 		KubeClientTimeoutMGRFlag,
 		60*time.Second,
@@ -112,16 +114,15 @@ func runManager(opts *managerOptions) error {
 	setupLog.Info("setting up v1beta2 scheme")
 	scheme.SetupV1beta2Scheme()
 
+	// cfg, ctrl options 생성
 	cfg := ctrl.GetConfigOrDie()
-
 	if qps := float32(viper.GetFloat64(KubeClientQPSMGRFlag)); qps > 0 {
 		cfg.QPS = qps
 		cfg.Burst = int(qps * 2)
 	}
 	cfg.Timeout = viper.GetDuration(KubeClientTimeoutMGRFlag)
-
-	// Manager 생성 -> 내부에 Informer와 Cache가 생성됨
 	ctrlOptions := createControllerOptions(opts)
+
 	mgr, err := ctrl.NewManager(cfg, ctrlOptions)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -133,7 +134,7 @@ func runManager(opts *managerOptions) error {
 		return err
 	}
 
-	if err := setupControllers(mgr, k8sClient, opts.maxConcurrentReconciles); err != nil {
+	if err := setupRedisClusterController(mgr, k8sClient, opts.maxConcurrentReconciles); err != nil {
 		return err
 	}
 
@@ -155,6 +156,8 @@ func runManager(opts *managerOptions) error {
 	return nil
 }
 
+// 유저가 입력한 날것의 데이터(opts)를 라이브러리가 알아들을 수 있는
+// 표준 규격(ctrl.Options)으로 번역해서 채워주는 과정
 func createControllerOptions(opts *managerOptions) ctrl.Options {
 	options := ctrl.Options{
 		Metrics: metricsserver.Options{
@@ -194,9 +197,9 @@ func createK8sClient() (kubernetes.Interface, error) {
 	return k8sClient, nil
 }
 
-// setupControllers는 모든 Controller를 Manager에 등록합니다.
-// 총 4개의 Controller가 등록되며, 각각 다른 Redis 리소스 타입을 관리합니다.
-func setupControllers(mgr ctrl.Manager, k8sClient kubernetes.Interface, maxConcurrentReconciles int) error {
+// 컨트롤러 (Controller): WithManager를 통해 만들어진 실행 단위
+// 리컨사일러 (Reconciler): 컨트롤러가 실제 업무를 수행할 때 참고하는 "업무 매뉴얼(함수)"
+func setupRedisClusterController(mgr ctrl.Manager, k8sClient kubernetes.Interface, maxConcurrentReconciles int) error {
 	// 환경 변수에서 최대 동시 Reconcile 수를 가져옵니다.
 	// 환경 변수가 설정되어 있으면 그 값을 사용하고, 없으면 플래그 값을 사용합니다.
 	maxConcurrentReconciles = envs.GetMaxConcurrentReconciles(maxConcurrentReconciles)
@@ -210,7 +213,6 @@ func setupControllers(mgr ctrl.Manager, k8sClient kubernetes.Interface, maxConcu
 		setupLog.Error(err, "unable to create controller", "controller", "RedisCluster")
 		return err
 	}
-	// Manager의 Informer가 API Server에 Watch 요청
 
 	return nil
 }

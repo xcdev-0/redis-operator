@@ -34,10 +34,7 @@ func (containerParams *ContainerParameters) generateMainContainerDef(
 
 	// 환경 변수 구성: 기본 환경 변수 + 추가 환경 변수
 	envVars := containerParams.GetEnvVars()
-	envVars = append(
-		ptr.Deref(containerParams.EnvVars, []corev1.EnvVar{}),
-		ptr.Deref(containerParams.AdditionalEnvVariable, []corev1.EnvVar{})...,
-	)
+	envVars = append(envVars, ptr.Deref(containerParams.AdditionalEnvVariable, []corev1.EnvVar{})...)
 
 	// 메인 Redis 컨테이너 생성
 	redisContainer := corev1.Container{
@@ -422,10 +419,7 @@ func (containerParams *ContainerParameters) generateInitContainerDef(
 	// ================================================
 	// 환경 변수 구성: 기본 환경 변수 + 추가 환경 변수
 	envVars := containerParams.GetEnvVars()
-	envVars = append(
-		ptr.Deref(containerParams.EnvVars, []corev1.EnvVar{}),
-		ptr.Deref(containerParams.AdditionalEnvVariable, []corev1.EnvVar{})...,
-	)
+	envVars = append(envVars, ptr.Deref(containerParams.AdditionalEnvVariable, []corev1.EnvVar{})...)
 
 	// Redis 최대 메모리 환경 변수 추가 (리소스 제한이 설정된 경우)
 	if containerParams.Resources != nil && containerParams.MaxMemoryPercentOfLimit != nil {
@@ -457,8 +451,8 @@ func (containerParams *ContainerParameters) generateInitContainerDef(
 		Name:            containerName,
 		Image:           envs.GetInitContainerImage(),
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"/operator", "agent"},
-		Args:            []string{"bootstrap"},
+		Command:         []string{"/operator"},
+		Args:            []string{"agent", "bootstrap"},
 		// SecurityContext:,
 		Env:          envVars,
 		VolumeMounts: volumeMounts,

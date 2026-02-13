@@ -37,6 +37,7 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	redisclusterv1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/cluster"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -100,20 +101,19 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// ================================================
 	// 첫번째로 실행하는 이유는 슬롯 이동 → follower 제거 → rebalance 같은 절차를 강제하기 위함
 	// 다운스케일 로직 진행하지 않고 아래 2,3 스텝에서 sts 팟을 제거하면 위험!!
-	if currentLeaderReplicas := r.GetStatefulSetReplicas(ctx, cr.Namespace, cr.Name+"-leader"); desiredLeaderReplicas < currentLeaderReplicas {
-		// StatefulSet이 아직 준비되지 않았으면 다운스케일을 수행하지 않습니다.
-		// 안정적인 상태에서만 다운스케일을 진행해야 합니다.
+	currentLeaderReplicas := r.GetStatefulSetReplicas(ctx, cr.Namespace, cr.Name+"-leader")
+	if desiredLeaderReplicas < currentLeaderReplicas {
 		if !r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-leader") || !r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-follower") {
 			return intctrlutil.Reconciled()
 		}
 
 		// 실제 Redis 클러스터에 있는 Leader 노드 수를 확인합니다.
 		// StatefulSet의 리플리카 수와 실제 클러스터의 노드 수가 일치해야 다운스케일을 진행합니다.
-		clusterLeaderNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+		realRedisNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
 		if err != nil {
 			return intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
 		}
-		if clusterLeaderNodeCount == currentLeaderReplicas {
+		if realRedisNodeCount == currentLeaderReplicas {
 			// Kubernetes Event를 기록하여 다운스케일 시작을 알립니다.
 			r.Recorder.Event(cr, corev1.EventTypeNormal, rcvb2.EventReasonRedisClusterDownscale, "Redis cluster is downscaling...")
 			logger.Info("Redis cluster is downscaling...", "Current.LeaderReplicas", currentLeaderReplicas, "Desired.LeaderReplicas", desiredLeaderReplicas)
@@ -122,14 +122,14 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			// 예: 5개에서 3개로 줄일 때, 샤드 4, 3을 순서대로 제거합니다.
 			lastLeaderOrdinal := currentLeaderReplicas - 1
 			firstOrdinalToRemove := desiredLeaderReplicas
-			for ordinal := lastLeaderOrdinal; ordinal >= firstOrdinalToRemove; ordinal-- {
-				logger.Info("Remove the Pod", "Pod.Index", ordinal)
+			for leaderOrdinal := lastLeaderOrdinal; leaderOrdinal >= firstOrdinalToRemove; leaderOrdinal-- {
+				logger.Info("Remove the Pod", "Pod.Index", leaderOrdinal)
 
 				// 중요: Kubernetes의 "leader" StatefulSet에 속한 Pod라도, 실제 Redis Cluster에서는
 				// 자동 failover, Pod 재시작, 네트워크 분할 등으로 인해 replica(slave) 역할을 하고 있을 수 있습니다.
 				// 슬롯을 이동하려면 해당 노드가 master 역할을 해야 하므로, 실제 역할을 확인합니다.
-				podName := k8smeta.GetPodName(cr.Name, "leader", int(ordinal))
-				isLeader, err := cluster.IsLeaderNode(ctx, r.K8sClient, cr, podName)
+				leaderPod := k8smeta.GetPodName(cr.Name, "leader", int(leaderOrdinal))
+				isLeader, err := cluster.IsLeaderNode(ctx, r.K8sClient, cr, leaderPod)
 				if err != nil {
 					logger.Error(err, "failed to check if pod is leader")
 					return intctrlutil.RequeueE(ctx, err, "")
@@ -137,8 +137,8 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				if !isLeader {
 					// 실제 Redis에서 이 Pod가 replica 역할을 하고 있으므로, cluster failover를 수행하여
 					// 해당 Pod를 master로 승격시킵니다. 이렇게 해야 해당 샤드의 슬롯을 다른 노드로 이동시킬 수 있습니다.
-					logger.Info("Cluster Failover is initiated", "Shard.Index", ordinal, "Reason", "Pod is replica, promoting to master for slot migration")
-					if err = cluster.ClusterFailover(ctx, r.K8sClient, cr, podName); err != nil {
+					logger.Info("Cluster Failover is initiated", "Shard.Index", leaderOrdinal, "Reason", "Pod is replica, promoting to master for slot migration")
+					if err = cluster.ClusterFailover(ctx, r.K8sClient, cr, leaderPod); err != nil {
 						logger.Error(err, "Failed to initiate cluster failover")
 						return intctrlutil.RequeueE(ctx, err, "")
 					}
@@ -146,29 +146,52 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 				// Step 1: 해당 샤드에 연결된 모든 Follower 노드를 클러스터에서 제거합니다.
 				// Follower를 먼저 제거한 후 Leader를 제거해야 안전합니다.
-				cluster.RemoveRedisFollowerNodesFromCluster(ctx, r.K8sClient, cr, ordinal)
+				if err = cluster.RemoveRedisFollowerNodesFromCluster(ctx, r.K8sClient, cr, leaderOrdinal); err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to remove follower nodes before downscale")
+				}
 
 				// Step 2: 해당 샤드의 슬롯을 다른 노드로 리샤딩합니다.
 				// Round-robin 방식으로 대상 노드를 선택합니다:
 				//   - shardIdx % leaderReplicas를 사용하여 나머지 노드에 고르게 분산
 				//   - 예: 5개에서 3개로 줄일 때, 샤드 4의 슬롯은 노드 1(4%3=1)로 이동
-				shardMoveNodeIdx := ordinal % desiredLeaderReplicas
-				cluster.ReshardRedisCluster(ctx, r.K8sClient, cr, ordinal, shardMoveNodeIdx, true)
+				shardMoveNodeIdx := leaderOrdinal % desiredLeaderReplicas
+				if err = cluster.ReshardRedisCluster(ctx, r.K8sClient, cr, leaderOrdinal, shardMoveNodeIdx); err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to reshard cluster during downscale")
+				}
+
+				// Step 3: 해당 샤드의 노드를 클러스터에서 제거합니다.
+				leaderPodNodeID, err := cluster.GetNodeIDByPod(ctx, r.K8sClient, cr, leaderPod)
+				if err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to resolve source node id for downscale removal")
+				}
+				if err = cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, leaderPodNodeID); err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to remove source node after reshard")
+				}
 			}
 
-			// Step 3: 클러스터를 재밸런싱합니다.
+			// Step 4: 클러스터를 재밸런싱합니다.
 			// 리샤딩 후에도 슬롯이 불균등하게 분배될 수 있으므로, 전체적으로 재밸런싱합니다.
 			logger.Info("Redis cluster is downscaled... Rebalancing the cluster")
-			cluster.RebalanceRedisCluster(ctx, r.K8sClient, cr)
+			if err = cluster.RebalanceRedisCluster(ctx, r.K8sClient, cr); err != nil {
+				return intctrlutil.RequeueE(ctx, err, "failed to rebalance cluster after downscale")
+			}
 			logger.Info("Redis cluster is downscaled... Rebalancing the cluster is done")
 
+			// Step 5: 제거된 ordinal의 PVC 삭제
+			// 다운스케일 후 남아있는 PVC(node-conf, data-persistence)를 삭제합니다.
+			// PVC에 이전 클러스터 정보(nodes.conf)가 남아있으면 스케일업 시 "Node is not empty" 에러가 발생합니다.
+			for ordinal := lastLeaderOrdinal; ordinal >= firstOrdinalToRemove; ordinal-- {
+				if err := r.deleteOrphanedPVCs(ctx, cr, int(ordinal)); err != nil {
+					logger.Error(err, "failed to delete orphaned PVCs", "ordinal", ordinal)
+				}
+			}
+
 			// 다운스케일 작업이 완료되었으므로 10초 후에 다시 reconcile합니다.
-			// 이 시간 동안 StatefulSet이 실제로 축소되고, 클러스터 상태가 안정화됩니다.
 			return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
 		} else {
 			// 실제 클러스터의 노드 수와 StatefulSet의 리플리카 수가 일치하지 않으면
 			// 다운스케일을 건너뜁니다. 먼저 클러스터 상태를 정상화해야 합니다.
-			logger.Info("masterCount is not equal to leader statefulset replicas,skip downscale", "masterCount", clusterLeaderNodeCount, "leaderReplicas", desiredLeaderReplicas)
+			logger.Info("masterCount is not equal to leader statefulset replicas,skip downscale", "masterCount", realRedisNodeCount, "leaderReplicas", desiredLeaderReplicas)
 		}
 	}
 	// ================================================
@@ -466,6 +489,34 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 정상 상태에서도 주기적으로 reconcile하여 클러스터 상태를 모니터링합니다.
 	return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
+}
+
+// deleteOrphanedPVCs deletes PVCs left behind after downscale for the given ordinal.
+// Both leader and follower PVCs (node-conf, data-persistence) are deleted.
+// NotFound errors are ignored (already deleted). Other errors are returned but non-fatal.
+func (r *RedisClusterReconciler) deleteOrphanedPVCs(ctx context.Context, cr *rcvb2.RedisCluster, ordinal int) error {
+	logger := log.FromContext(ctx)
+	roles := []string{"leader", "follower"}
+	volumeNames := []string{consts.VolumeNameNodeConf, consts.VolumeNameData}
+
+	for _, role := range roles {
+		podName := k8smeta.GetPodName(cr.Name, role, ordinal)
+		for _, volName := range volumeNames {
+			pvcName := fmt.Sprintf("%s-%s", volName, podName)
+			pvc := &corev1.PersistentVolumeClaim{}
+			pvc.Name = pvcName
+			pvc.Namespace = cr.Namespace
+			if err := r.Client.Delete(ctx, pvc); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				logger.Error(err, "failed to delete PVC", "pvc", pvcName)
+				return err
+			}
+			logger.Info("deleted orphaned PVC", "pvc", pvcName)
+		}
+	}
+	return nil
 }
 
 func (r *RedisClusterReconciler) updateStatus(ctx context.Context, rc *rcvb2.RedisCluster, status rcvb2.RedisClusterStatus) (requeue bool, err error) {

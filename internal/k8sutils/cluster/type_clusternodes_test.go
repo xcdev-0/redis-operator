@@ -111,26 +111,37 @@ func TestClusterNode_IsFailedOrDisconnected(t *testing.T) {
 	tests := []struct {
 		name  string
 		flags string
+		state string
 		want  bool
 	}{
 		{
 			name:  "fail flag",
 			flags: "master,fail",
+			state: "connected",
 			want:  true,
 		},
 		{
 			name:  "fail? flag (PFAIL)",
 			flags: "master,fail?",
+			state: "connected",
 			want:  true,
 		},
 		{
-			name:  "disconnected flag",
+			name:  "disconnected state",
+			flags: "master",
+			state: "disconnected",
+			want:  true,
+		},
+		{
+			name:  "disconnected flag fallback",
 			flags: "master,disconnected",
+			state: "connected",
 			want:  true,
 		},
 		{
 			name:  "정상 노드",
 			flags: "master,myself",
+			state: "connected",
 			want:  false,
 		},
 	}
@@ -139,10 +150,11 @@ func TestClusterNode_IsFailedOrDisconnected(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			node := &ClusterNode{
 				Flags: tt.flags,
+				State: tt.state,
 			}
 			if got := node.IsFailedOrDisconnected(); got != tt.want {
-				t.Errorf("IsFailedOrDisconnected() = %v, want %v (Flags: %s)",
-					got, tt.want, tt.flags)
+				t.Errorf("IsFailedOrDisconnected() = %v, want %v (Flags: %s, State: %s)",
+					got, tt.want, tt.flags, tt.state)
 			}
 		})
 	}

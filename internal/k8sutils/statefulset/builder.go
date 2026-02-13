@@ -185,7 +185,8 @@ func generateStatefulSetDef(
 		statefulset.Spec.VolumeClaimTemplates = append(
 			statefulset.Spec.VolumeClaimTemplates,
 			createPVC(
-				objectMeta.GetName(),
+				// objectMeta.GetName(),
+				consts.VolumeNameData,
 				objectMeta,
 				stsParams.DataPVC))
 	}

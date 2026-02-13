@@ -78,6 +78,48 @@ func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr
 	return int32(len(clusterNodes)), nil
 }
 
+// GetNodeIDByPod returns the current Redis node ID for a pod.
+func GetNodeIDByPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (string, error) {
+	nodeID := getRedisNodeID(ctx, client, cr, redisservice.RedisDetails{
+		PodName:   podName,
+		Namespace: cr.Namespace,
+	})
+	if nodeID == "" {
+		return "", fmt.Errorf("failed to resolve node id for pod %s", podName)
+	}
+	return nodeID, nil
+}
+
+// GetEffectiveMasterNodeIDByPod returns:
+// - node's own ID if pod is currently master
+// - its upstream master ID if pod is currently follower
+func GetEffectiveMasterNodeIDByPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (string, error) {
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
+	if err != nil {
+		return "", err
+	}
+
+	nodeID, err := GetNodeIDByPod(ctx, client, cr, podName)
+	if err != nil {
+		return "", err
+	}
+
+	for _, node := range clusterNodes {
+		if node.NodeID != nodeID {
+			continue
+		}
+		if node.IsLeader() {
+			return node.NodeID, nil
+		}
+		if node.IsFollower() && node.MasterID != "" && node.MasterID != "-" {
+			return node.MasterID, nil
+		}
+		return "", fmt.Errorf("pod %s has unexpected role flags: %s", podName, node.Flags)
+	}
+
+	return "", fmt.Errorf("node %s for pod %s not found in cluster", nodeID, podName)
+}
+
 // getRedisNodeID는 지정된 Pod의 Redis 노드 ID를 반환합니다.
 // Redis 명령어: PING, CLUSTER MYID
 func getRedisNodeID(
@@ -186,16 +228,18 @@ func IsLeaderNode(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2
 	return false, nil
 }
 
-func checkRedisNodePresence(ctx context.Context, nodes []ClusterNode, podIP string) bool {
+func checkRedisNodePresence(ctx context.Context, nodes []ClusterNode, podIPOrHostname string) bool {
 	// clusterNode.AddressAndHostName -> ip:port@cport 또는 ip:port@cport,hostname
 	// IPv4: "10.0.0.1:6379@16379" 또는 IPv6: "[2001:db8::1]:6379@16379"
 	for _, node := range nodes {
+		// IP 비교
 		ip, err := node.GetIP()
-		if err != nil {
-			log.FromContext(ctx).V(1).Error(err, "Failed to extract IP from node", "Node", node.AddressAndHostName)
-			continue
+		if err == nil && ip == podIPOrHostname {
+			return true
 		}
-		if ip == podIP {
+		// Hostname(FQDN) 비교 - v7에서 cluster-announce-hostname 사용 시
+		hostname := node.GetHostname()
+		if hostname != "" && hostname == podIPOrHostname {
 			return true
 		}
 	}

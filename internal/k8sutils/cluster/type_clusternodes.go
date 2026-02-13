@@ -92,7 +92,9 @@ func (node *ClusterNode) IsFailed() bool {
 	return node.HasFlagType("fail") || strings.Contains(node.Flags, "fail?")
 }
 func (node *ClusterNode) IsFailedOrDisconnected() bool {
-	return node.IsFailed() || node.HasFlagType("disconnected")
+	// Redis CLUSTER NODES의 link state는 별도 state 필드(connected/disconnected)에 기록됩니다.
+	// 일부 환경의 비표준 출력 호환을 위해 flags의 disconnected도 보조적으로 확인합니다.
+	return node.IsFailed() || strings.EqualFold(strings.TrimSpace(node.State), "disconnected") || node.HasFlagType("disconnected")
 }
 
 // GetIP는 ClusterNode의 AddressAndHostName에서 IP를 추출합니다.

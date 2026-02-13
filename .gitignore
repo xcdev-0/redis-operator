@@ -9,6 +9,7 @@ Dockerfile.cross
 origin
 # Test binary, built with `go test -c`
 *.test
+temp
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out

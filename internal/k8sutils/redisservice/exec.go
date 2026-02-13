@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/client"
@@ -16,14 +17,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// extractLastMeaningfulLine은 redis-cli 출력에서 마지막 비어있지 않은 줄을 추출합니다.
+func extractLastMeaningfulLine(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return output
+}
+
 // ExecuteCommandInPod는 Pod에서 명령을 실행합니다.
 func ExecuteCommandInPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, cmd []string, podName string) {
 	execOut, execErr := executeCommand(ctx, client, cr, cmd, podName)
 	if execErr != nil {
-		log.FromContext(ctx).Error(execErr, "Could not execute command", "Command", cmd, "Output", execOut)
+		log.FromContext(ctx).Error(execErr, "Could not execute command", "Command", cmd, "Result", extractLastMeaningfulLine(execOut))
+		log.FromContext(ctx).V(1).Info("Command full output", "Output", execOut)
 		return
 	}
-	log.FromContext(ctx).V(1).Info("Successfully executed the command", "Command", cmd, "Output", execOut)
+	log.FromContext(ctx).V(1).Info("Successfully executed the command", "Command", cmd, "Result", extractLastMeaningfulLine(execOut))
 }
 
 // ExecuteCommandInPodWithResult는 Pod에서 명령을 실행하고 결과와 에러를 반환합니다.
