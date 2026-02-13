@@ -1,7 +1,7 @@
 apiVersion: ejlabs.in/v1beta2
 kind: RedisCluster
 metadata:
-  name: test-redis-cluster
+  name: hello
   namespace: default
 spec:
   clusterSize: 3
@@ -17,7 +17,7 @@ spec:
           mountPath: /test-volume
     node:
       enabled: true
-      volumeClaimTemplate:
+      persistentVolumeClaim:
         spec:
           accessModes: ["ReadWriteOnce"]
           resources:
@@ -25,7 +25,7 @@ spec:
               storage: 100Mi
     data:
       enabled: true
-      volumeClaimTemplate:
+      persistentVolumeClaim:
         spec:
           accessModes: ["ReadWriteOnce"]
           resources:
@@ -33,12 +33,22 @@ spec:
               storage: 1Gi
   
   redisLeader:
-    replicaCount: 3
+    # replicaCount: 3
     redisConfig: {}
+    containerSecurityContext:
+      capabilities:
+        add:
+          - NET_ADMIN
+          - NET_RAW
   
   redisFollower:
-    replicaCount: 3
+    # replicaCount: 3
     redisConfig: {}
+    containerSecurityContext:
+      capabilities:
+        add:
+          - NET_ADMIN
+          - NET_RAW
   
   kubernetesConfig:
     image: redis:7.2-alpine
