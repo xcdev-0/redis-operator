@@ -159,3 +159,49 @@ func TestCountClusterMemberNodes(t *testing.T) {
 		})
 	}
 }
+
+func TestCountAliveLeaderNodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		nodes    []ClusterNode
+		expected int32
+	}{
+		{
+			name: "counts only connected masters",
+			nodes: []ClusterNode{
+				{NodeID: "m1", Flags: "master", State: "connected"},
+				{NodeID: "m2", Flags: "master,fail?", State: "connected"},
+				{NodeID: "m3", Flags: "master", State: "disconnected"},
+				{NodeID: "s1", Flags: "slave", State: "connected"},
+			},
+			expected: 1,
+		},
+		{
+			name: "deduplicates by node id",
+			nodes: []ClusterNode{
+				{NodeID: "m1", Flags: "master", State: "connected"},
+				{NodeID: "m1", Flags: "master", State: "connected"},
+				{NodeID: "m2", Flags: "master", State: "connected"},
+			},
+			expected: 2,
+		},
+		{
+			name: "falls back to address key when node id is empty",
+			nodes: []ClusterNode{
+				{NodeID: "", AddressAndHostName: "10.0.0.1:6379@16379", Flags: "master", State: "connected"},
+				{NodeID: "", AddressAndHostName: "10.0.0.1:6379@16379", Flags: "master", State: "connected"},
+				{NodeID: "", AddressAndHostName: "10.0.0.2:6379@16379", Flags: "master", State: "connected"},
+			},
+			expected: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := countAliveLeaderNodes(tt.nodes)
+			if got != tt.expected {
+				t.Fatalf("countAliveLeaderNodes() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}

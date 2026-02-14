@@ -107,13 +107,18 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return intctrlutil.Reconciled()
 		}
 
-		// 실제 Redis 클러스터에 있는 Leader 노드 수를 확인합니다.
-		// StatefulSet의 리플리카 수와 실제 클러스터의 노드 수가 일치해야 다운스케일을 진행합니다.
-		realRedisNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+		// 다운스케일은 엄격한 안정성 기준에서만 수행합니다.
+		// - alive master 수가 StatefulSet leader replica 수와 같아야 함
+		// - fail/disconnected 노드가 없어야 함
+		aliveMasterCount, err := cluster.GetClusterAliveMasterNodeCount(ctx, r.K8sClient, cr)
 		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
+			return intctrlutil.RequeueE(ctx, err, "failed to get alive master node count")
 		}
-		if realRedisNodeCount == currentLeaderReplicas {
+		unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+		if err != nil {
+			return intctrlutil.RequeueE(ctx, err, "failed to get unhealthy node count before downscale")
+		}
+		if aliveMasterCount == currentLeaderReplicas && unhealthyNodeCount == 0 {
 			// Kubernetes Event를 기록하여 다운스케일 시작을 알립니다.
 			r.Recorder.Event(cr, corev1.EventTypeNormal, rcvb2.EventReasonRedisClusterDownscale, "Redis cluster is downscaling...")
 			logger.Info("Redis cluster is downscaling...", "Current.LeaderReplicas", currentLeaderReplicas, "Desired.LeaderReplicas", desiredLeaderReplicas)
@@ -189,10 +194,10 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			// 다운스케일 작업이 완료되었으므로 10초 후에 다시 reconcile합니다.
 			return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
 		} else {
-			// 실제 클러스터의 노드 수와 StatefulSet의 리플리카 수가 일치하지 않으면
-			// 다운스케일을 건너뜁니다. 먼저 클러스터 상태를 정상화해야 합니다.
-			logger.Info("masterCount is not equal to leader statefulset replicas, skip downscale",
-				"masterCount", realRedisNodeCount,
+			// 엄격한 안정성 기준을 만족하지 못하면 다운스케일을 건너뜁니다.
+			logger.Info("downscale preconditions not met, skip downscale",
+				"aliveMasterCount", aliveMasterCount,
+				"unhealthyNodeCount", unhealthyNodeCount,
 				"statefulSetLeaderReplicas", currentLeaderReplicas,
 				"desiredLeaderReplicas", desiredLeaderReplicas)
 		}
@@ -345,6 +350,23 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				}
 				logger.Info("Redis cluster creation result", "Result", result)
 			} else if currentLeaderCount < desiredLeaderReplicas {
+				unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+				if err != nil {
+					return intctrlutil.RequeueE(ctx, err, "failed to get unhealthy node count before adding leader")
+				}
+				if unhealthyNodeCount > 0 {
+					logger.Info("cluster has unhealthy nodes, skipping leader add/rebalance",
+						"Unhealthy.Node.Count", unhealthyNodeCount,
+						"Current.Leader.Count", currentLeaderCount,
+						"Desired.Leader.Count", desiredLeaderReplicas,
+						"Current.Count", nc,
+						"Desired.Count", desiredTotalReplicas)
+					if repairErr := cluster.RepairDisconnectedNodes(ctx, r.K8sClient, cr); repairErr != nil {
+						logger.Error(repairErr, "failed to repair disconnected nodes before leader add")
+					}
+					return intctrlutil.RequeueAfter(ctx, time.Second*30, "cluster has unhealthy nodes, waiting before adding leader")
+				}
+
 				// 클러스터가 이미 형성된 상태에서 스케일 업: 새 leader 노드를 기존 클러스터에 추가합니다.
 				// redis-cli --cluster add-node로 개별 노드를 추가한 후 슬롯을 재배분합니다.
 				if err := cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr); err != nil {
@@ -355,6 +377,23 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				}
 			}
 		} else {
+			unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+			if err != nil {
+				return intctrlutil.RequeueE(ctx, err, "failed to get unhealthy node count before follower replication")
+			}
+			if unhealthyNodeCount > 0 {
+				logger.Info("cluster has unhealthy nodes, skipping follower replication",
+					"Unhealthy.Node.Count", unhealthyNodeCount,
+					"Current.Leader.Count", currentLeaderCount,
+					"Desired.Leader.Count", desiredLeaderReplicas,
+					"Current.Count", nc,
+					"Desired.Count", desiredTotalReplicas)
+				if repairErr := cluster.RepairDisconnectedNodes(ctx, r.K8sClient, cr); repairErr != nil {
+					logger.Error(repairErr, "failed to repair disconnected nodes before follower replication")
+				}
+				return intctrlutil.RequeueAfter(ctx, time.Second*30, "cluster has unhealthy nodes, waiting before follower replication")
+			}
+
 			currentFollowerCount, err := cluster.GetClusterFollowerNodeCount(ctx, r.K8sClient, cr)
 			if err != nil {
 				return intctrlutil.RequeueE(ctx, err, "failed to get cluster follower node count")

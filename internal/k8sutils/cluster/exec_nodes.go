@@ -54,6 +54,14 @@ func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface,
 	return int32(count), nil
 }
 
+func GetClusterAliveMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
+	if err != nil {
+		return 0, err
+	}
+	return countAliveLeaderNodes(clusterNodes), nil
+}
+
 func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
 	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
@@ -88,6 +96,34 @@ func countClusterMemberNodes(nodes []ClusterNode) int32 {
 
 	for _, node := range nodes {
 		if !node.IsLeader() && !node.IsFollower() {
+			continue
+		}
+
+		key := node.NodeID
+		if key == "" {
+			key = node.AddressAndHostName
+		}
+		if key == "" {
+			continue
+		}
+
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		count++
+	}
+	return count
+}
+
+// countAliveLeaderNodes는 "master"이면서 fail/disconnected가 아닌 노드 수를 계산합니다.
+// 다운스케일과 같이 엄격한 안정성 기준이 필요한 경로에서 사용합니다.
+func countAliveLeaderNodes(nodes []ClusterNode) int32 {
+	seen := make(map[string]struct{}, len(nodes))
+	var count int32
+
+	for _, node := range nodes {
+		if !node.IsLeader() || node.IsFailedOrDisconnected() {
 			continue
 		}
 
