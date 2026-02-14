@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"context"
 	"testing"
 )
 
@@ -72,7 +71,7 @@ func TestCheckRedisNodePresence(t *testing.T) {
 				{AddressAndHostName: "[2001:db8::2]:6379@16379"},
 			},
 			podIP:    "2001:db8::1",
-			expected: false, // 현재 구현은 IPv6 대괄호를 처리하지 않음
+			expected: true,
 		},
 		{
 			name: "여러 노드 중 중간 노드와 일치",
@@ -106,10 +105,56 @@ func TestCheckRedisNodePresence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			result := checkRedisNodePresence(ctx, tt.nodes, tt.podIP)
+			result := checkRedisNodePresence(tt.nodes, tt.podIP)
 			if result != tt.expected {
 				t.Errorf("checkRedisNodePresence() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCountClusterMemberNodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		nodes    []ClusterNode
+		expected int32
+	}{
+		{
+			name: "master/slave only counts as members",
+			nodes: []ClusterNode{
+				{NodeID: "m1", Flags: "master"},
+				{NodeID: "s1", Flags: "slave"},
+				{NodeID: "m2", Flags: "master,fail?"},
+				{NodeID: "h1", Flags: "handshake"},
+				{NodeID: "n1", Flags: "noaddr"},
+			},
+			expected: 3,
+		},
+		{
+			name: "deduplicates by node id",
+			nodes: []ClusterNode{
+				{NodeID: "m1", Flags: "master"},
+				{NodeID: "m1", Flags: "master,fail?"},
+				{NodeID: "s1", Flags: "slave"},
+			},
+			expected: 2,
+		},
+		{
+			name: "falls back to address key when node id is empty",
+			nodes: []ClusterNode{
+				{NodeID: "", AddressAndHostName: "10.0.0.1:6379@16379", Flags: "master"},
+				{NodeID: "", AddressAndHostName: "10.0.0.1:6379@16379", Flags: "master,fail?"},
+				{NodeID: "", AddressAndHostName: "10.0.0.2:6379@16379", Flags: "slave"},
+			},
+			expected: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := countClusterMemberNodes(tt.nodes)
+			if got != tt.expected {
+				t.Fatalf("countClusterMemberNodes() = %d, want %d", got, tt.expected)
 			}
 		})
 	}

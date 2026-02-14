@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/envs"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -123,13 +121,13 @@ func getEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.Red
 	}, nil
 }
 
-func getService(ctx context.Context, client kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
-	serviceInfo, err := client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return serviceInfo, nil
-}
+// func getService(ctx context.Context, client kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
+// 	serviceInfo, err := client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return serviceInfo, nil
+// }
 
 func GetRedisPodIP(ctx context.Context, client kubernetes.Interface, redisInfo RedisDetails) string {
 	log.FromContext(ctx).V(1).Info("Fetching Redis pod", "namespace", redisInfo.Namespace, "podName", redisInfo.PodName)

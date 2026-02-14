@@ -135,14 +135,14 @@ func RemoveRedisNodeByID(ctx context.Context, k8sClient kubernetes.Interface, cr
 		Namespace: cr.Namespace,
 	}
 
-	endpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, executePodDetails)
+	executeEndpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, executePodDetails)
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint for execution pod %s: %w", executePodDetails.PodName, err)
 	}
 	ri := &RedisInvocation{
 		Command: []string{
 			"redis-cli", "--cluster", "del-node",
-			endpoint,
+			executeEndpoint,
 			nodeID,
 		},
 	}
@@ -418,7 +418,7 @@ func ExecuteRedisReplicationCommand(ctx context.Context, k8sClient kubernetes.In
 				continue
 			}
 			// TODO: ERROR fqdn일때는 무조건 존재하지 않게됨
-			if !checkRedisNodePresence(ctx, nodes, followerEndpointIP) {
+			if !checkRedisNodePresence(nodes, followerEndpointIP) {
 				log.FromContext(ctx).V(1).Info("Adding node to cluster.", "Node.IP", followerEndpointIP, "Follower.Pod", followerPod)
 
 				followerEndpoint, err := redisservice.GetEndpoint(ctx, k8sClient, cr, followerPod)

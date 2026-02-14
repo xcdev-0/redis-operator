@@ -91,8 +91,7 @@ kubectl exec -n default hello-follower-2 -c redis -- sh -c 'ip link set eth0 dow
 
 # 로그 확인
 kubectl logs -n default rediscluster-controller-manager-6cd7d4ff69-nxf7w \
-  --since-time=2026-02-13T14:14:05Z | \
-  rg 'Failed Node Count|manual intervention required|cluster broken|repairing unhealthy masters successful'
+  | grep -E 'Failed Node Count|manual intervention required|cluster broken|repairing unhealthy masters successful'
 ```
 
 ### 결과 (로그 근거)
@@ -110,7 +109,6 @@ kubectl logs -n default rediscluster-controller-manager-6cd7d4ff69-nxf7w \
   - `repairing unhealthy masters successful, no unhealthy masters left`
 
 참고:
-- 복구 도중 `handshake/disconnected` 임시 노드가 생기며 `Failed Node Count`가 일시적으로 11까지 증가했다.
 - 네트워크 복구 후 재조정 과정에서 마스터/슬레이브 역할 재배치가 발생할 수 있으나, 슬롯 커버리지는 유지된다.
 
 ### 최종 상태

@@ -75,7 +75,37 @@ func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr
 		return 0, err
 	}
 
-	return int32(len(clusterNodes)), nil
+	return countClusterMemberNodes(clusterNodes), nil
+}
+
+// countClusterMemberNodes는 CLUSTER NODES 출력에서 "실제 멤버(master/slave)" 수를 계산합니다.
+// - fail/fail? 상태라도 master/slave 플래그가 있으면 멤버로 간주합니다.
+// - handshake/noaddr 등 role 플래그가 없는 임시 엔트리는 제외합니다.
+// - 동일 node id(또는 주소) 중복 엔트리는 1회만 카운트합니다.
+func countClusterMemberNodes(nodes []ClusterNode) int32 {
+	seen := make(map[string]struct{}, len(nodes))
+	var count int32
+
+	for _, node := range nodes {
+		if !node.IsLeader() && !node.IsFollower() {
+			continue
+		}
+
+		key := node.NodeID
+		if key == "" {
+			key = node.AddressAndHostName
+		}
+		if key == "" {
+			continue
+		}
+
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		count++
+	}
+	return count
 }
 
 // GetNodeIDByPod returns the current Redis node ID for a pod.
@@ -228,7 +258,7 @@ func IsLeaderNode(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2
 	return false, nil
 }
 
-func checkRedisNodePresence(ctx context.Context, nodes []ClusterNode, podIPOrHostname string) bool {
+func checkRedisNodePresence(nodes []ClusterNode, podIPOrHostname string) bool {
 	// clusterNode.AddressAndHostName -> ip:port@cport 또는 ip:port@cport,hostname
 	// IPv4: "10.0.0.1:6379@16379" 또는 IPv6: "[2001:db8::1]:6379@16379"
 	for _, node := range nodes {

@@ -349,16 +349,32 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				}
 			}
 		} else {
-			if desiredFollwerReplicas > 0 {
+			currentFollowerCount, err := cluster.GetClusterFollowerNodeCount(ctx, r.K8sClient, cr)
+			if err != nil {
+				return intctrlutil.RequeueE(ctx, err, "failed to get cluster follower node count")
+			}
+			if desiredFollwerReplicas == 0 {
+				logger.Info("no follower/replicas configured, skipping replication configuration", "Leaders.Count", currentLeaderCount, "Leader.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
+			} else if currentFollowerCount < desiredFollwerReplicas {
 				logger.Info("All leader are part of the cluster, adding follower/replicas", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
 				if err := cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr); err != nil {
 					return intctrlutil.RequeueE(ctx, err, "failed to execute replication command")
 				}
+			} else if currentFollowerCount > desiredFollwerReplicas {
+				logger.Info("follower count is higher than desired; waiting for node cleanup", "Current.Follower.Count", currentFollowerCount, "Desired.Follower.Count", desiredFollwerReplicas)
 			} else {
-				logger.Info("no follower/replicas configured, skipping replication configuration", "Leaders.Count", currentLeaderCount, "Leader.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
+				logger.Info("leader/follower counts match desired, waiting for total cluster node convergence", "Current.Leader.Count", currentLeaderCount, "Desired.Leader.Count", desiredLeaderReplicas, "Current.Follower.Count", currentFollowerCount, "Desired.Follower.Count", desiredFollwerReplicas)
 			}
+
+			return intctrlutil.RequeueAfter(ctx, time.Second*60,
+				"Redis cluster count is not desired",
+				"Current.Count", nc,
+				"Desired.Count", desiredTotalReplicas, "\n",
+				"Current.Leader.Count", currentLeaderCount,
+				"Current.Follower.Count", currentFollowerCount, "\n",
+				"Desired.Leader.Count", desiredLeaderReplicas,
+				"Desired.Follower.Count", desiredFollwerReplicas)
 		}
-		return intctrlutil.RequeueAfter(ctx, time.Second*60, "Redis cluster count is not desired", "Current.Count", nc, "Desired.Count", desiredTotalReplicas)
 	}
 
 	// leader follower 모두 준비되었으면 클러스터 상태를 확인합니다.
