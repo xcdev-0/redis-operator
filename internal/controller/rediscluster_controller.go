@@ -191,7 +191,10 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		} else {
 			// 실제 클러스터의 노드 수와 StatefulSet의 리플리카 수가 일치하지 않으면
 			// 다운스케일을 건너뜁니다. 먼저 클러스터 상태를 정상화해야 합니다.
-			logger.Info("masterCount is not equal to leader statefulset replicas,skip downscale", "masterCount", realRedisNodeCount, "leaderReplicas", desiredLeaderReplicas)
+			logger.Info("masterCount is not equal to leader statefulset replicas, skip downscale",
+				"masterCount", realRedisNodeCount,
+				"statefulSetLeaderReplicas", currentLeaderReplicas,
+				"desiredLeaderReplicas", desiredLeaderReplicas)
 		}
 	}
 	// ================================================
@@ -316,6 +319,8 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 5. 클러스터 초기화
 	// ================================================
 	// 목표 leader, follower 수에 맞게 클러스터를 초기화합니다.
+	// step 5는 유저가 redicluster replicas수를 변경하였을 때 또는 처음 초기화될 때 실행됩니다.
+	// noaddr, handshake같은 임시 엔트리를 제외하기 위하여 master, slave 플래그가 있는 노드만 카운트합니다.
 	nc, err := cluster.GetClusterAllNodeCount(ctx, r.K8sClient, cr, "")
 	if err != nil {
 		return intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
@@ -327,6 +332,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err != nil {
 			return intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
 		}
+		// TODO: currentLeaderCount > desiredLeaderReplica인경우도 처리해야할까?
 		if currentLeaderCount != desiredLeaderReplicas {
 			logger.Info("Not all leader are part of the cluster...", "Leaders.Count", currentLeaderCount, "Instance.Size", desiredLeaderReplicas)
 			if currentLeaderCount <= 1 {
@@ -367,7 +373,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			}
 
 			return intctrlutil.RequeueAfter(ctx, time.Second*60,
-				"Redis cluster count is not desired",
+				"Redis cluster count is not desired", "\n",
 				"Current.Count", nc,
 				"Desired.Count", desiredTotalReplicas, "\n",
 				"Current.Leader.Count", currentLeaderCount,
@@ -384,7 +390,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	logger.Info("Number of Redis nodes match desired")
 	unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 	if err != nil {
-		logger.Error(err, "failed to determine unhealthy node count in cluster")
+		return intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
 	}
 
 	// 비정상 노드가 발견된 경우 (단일 노드 클러스터는 제외)
@@ -501,7 +507,9 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// ========================================================================
 	// Pod의 실제 역할(leader/follower)을 Kubernetes 라벨로 동기화합니다.
 	// 이렇게 하면 Service Selector가 올바르게 작동하여 각 역할의 Pod를 정확히 선택할 수 있습니다.
-	cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr)
+	if err := cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr); err != nil {
+		return intctrlutil.RequeueE(ctx, err, "failed to update redis role labels")
+	}
 
 	// 정상 상태에서도 주기적으로 reconcile하여 클러스터 상태를 모니터링합니다.
 	return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
