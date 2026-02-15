@@ -14,7 +14,7 @@ func TestEndpointInfo_String(t *testing.T) {
 		{
 			name: "정상적인 엔드포인트",
 			endpoint: &EndpointInfo{
-				Host: "10.0.0.1",
+				IP:   "10.0.0.1",
 				Port: "6379",
 			},
 			expected: "10.0.0.1:6379",
@@ -22,7 +22,7 @@ func TestEndpointInfo_String(t *testing.T) {
 		{
 			name: "IPv6 주소",
 			endpoint: &EndpointInfo{
-				Host: "[2001:db8::1]",
+				IP:   "[2001:db8::1]",
 				Port: "6379",
 			},
 			expected: "[2001:db8::1]:6379",
@@ -30,7 +30,7 @@ func TestEndpointInfo_String(t *testing.T) {
 		{
 			name: "FQDN 주소",
 			endpoint: &EndpointInfo{
-				Host: "redis-pod-0.redis-headless.default.svc.cluster.local",
+				IP:   "redis-pod-0.redis-headless.default.svc.cluster.local",
 				Port: "6379",
 			},
 			expected: "redis-pod-0.redis-headless.default.svc.cluster.local:6379",
@@ -43,7 +43,7 @@ func TestEndpointInfo_String(t *testing.T) {
 		{
 			name: "빈 문자열",
 			endpoint: &EndpointInfo{
-				Host: "",
+				IP:   "",
 				Port: "",
 			},
 			expected: ":",
@@ -51,7 +51,7 @@ func TestEndpointInfo_String(t *testing.T) {
 		{
 			name: "NodePort 형식",
 			endpoint: &EndpointInfo{
-				Host: "192.168.1.100",
+				IP:   "192.168.1.100",
 				Port: "30001",
 			},
 			expected: "192.168.1.100:30001",
@@ -60,7 +60,7 @@ func TestEndpointInfo_String(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.endpoint.String()
+			result := tt.endpoint.HostAndPort()
 			if result != tt.expected {
 				t.Errorf("EndpointInfo.String() = %v, want %v", result, tt.expected)
 			}
@@ -134,4 +134,70 @@ func TestGetEndPointIP_ErrorHandling(t *testing.T) {
 			// TODO: Kubernetes client mock을 사용한 실제 테스트 구현
 		})
 	}
+}
+
+func TestEndpointInfo_Compare(t *testing.T) {
+	tests := []struct {
+		name    string
+		left    *EndpointInfo
+		right   *EndpointInfo
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "ipv6 bracket normalization",
+			left: &EndpointInfo{
+				IP:   "[2001:db8::1]",
+				Port: "6379",
+			},
+			right: &EndpointInfo{
+				IP:   "2001:db8::1",
+				Port: "6379",
+			},
+			want: true,
+		},
+		{
+			name: "fqdn lowercase trim normalization",
+			left: &EndpointInfo{
+				IP:   "10.0.0.1",
+				Port: "6379",
+				FQDN: strPtr(" Redis-0.Default.SVC.Cluster.Local "),
+			},
+			right: &EndpointInfo{
+				IP:   "10.0.0.99",
+				Port: "6379",
+				FQDN: strPtr("redis-0.default.svc.cluster.local"),
+			},
+			want: true,
+		},
+		{
+			name: "nil target returns error",
+			left: &EndpointInfo{
+				IP:   "10.0.0.1",
+				Port: "6379",
+			},
+			right:   nil,
+			want:    false,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.left.Compare(tt.right)
+			if tt.wantErr && err == nil {
+				t.Fatalf("Compare() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Compare() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Compare() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func strPtr(value string) *string {
+	return &value
 }

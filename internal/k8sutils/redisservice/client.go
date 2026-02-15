@@ -25,13 +25,13 @@ func ConfigureRedisClient(ctx context.Context, client kubernetes.Interface, cr *
 		log.FromContext(ctx).Error(err, "Error in getting redisutils password")
 		return nil
 	}
-	endpoint, err := GetEndpoint(ctx, client, cr, redisInfo)
+	endpoint, err := GetEndPoint(ctx, client, cr, redisInfo)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Error in getting redis endpoint", "Pod", redisInfo.PodName)
 		return nil
 	}
 	opts := &redis.Options{
-		Addr:     endpoint,
+		Addr:     endpoint.HostAndPort(),
 		Password: pass,
 		DB:       0,
 	}

@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -39,109 +41,102 @@ func getClusterNodesWithFallback(ctx context.Context, client kubernetes.Interfac
 	return nil, fmt.Errorf("failed to get cluster nodes from any leader pod: %w", lastErr)
 }
 
-func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
-	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
-	if err != nil {
-		return 0, err
-	}
+// countNodesBy는 filter 조건에 맞는 노드를 중복 제거하여 카운트합니다.
+func countNodesBy(nodes []ClusterNode, filter func(ClusterNode) bool) int32 {
+	seen := make(map[string]struct{}, len(nodes))
+	var count int32
 
-	count := 0
-	for _, node := range clusterNodes {
-		if node.IsLeader() {
-			count++
+	for _, node := range nodes {
+		if !filter(node) {
+			continue
 		}
+
+		key := node.NodeID
+		if key == "" {
+			key = node.address
+		}
+		if key == "" {
+			continue
+		}
+
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		count++
 	}
-	return int32(count), nil
+	return count
 }
 
-func GetClusterAliveMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
-	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
+func getClusterNodeCountByFilter(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, filter func(ClusterNode) bool) (int32, error) {
+	nodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
 		return 0, err
 	}
-	return countAliveLeaderNodes(clusterNodes), nil
+	return countNodesBy(nodes, filter), nil
 }
 
 func GetClusterFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
+		return n.IsFollower()
+	})
+}
+
+func GetClusterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
+		return n.IsLeader() || n.IsFollower()
+	})
+}
+
+func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
+		return n.IsLeader()
+	})
+}
+
+func GetClusterHealthyMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
+		return n.IsLeader() && !n.IsFailedOrDisconnected()
+	})
+}
+
+func GetClusterHealthyFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
+		return n.IsFollower() && !n.IsFailedOrDisconnected()
+	})
+}
+
+func GetClusterPendingNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
+	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
+		return n.HasFlagType("handshake") || n.HasFlagType("noaddr")
+	})
+}
+
+// IsPodJoinedCluster returns whether the given pod currently appears in CLUSTER NODES.
+// If pod/service is not found, it returns (false, nil).
+func IsPodJoinedCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (bool, error) {
 	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
-		return 0, err
+		return false, fmt.Errorf("failed to get cluster nodes: %w", err)
 	}
 
-	count := 0
-	for _, node := range clusterNodes {
-		if node.IsFollower() {
-			count++
-		}
+	pod := redisservice.RedisDetails{
+		PodName:   podName,
+		Namespace: cr.Namespace,
 	}
-	return int32(count), nil
-}
-
-func GetClusterAllNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, flagRole string) (int32, error) {
-	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
+	podEndpoint, err := redisservice.GetEndPoint(ctx, client, cr, pod)
 	if err != nil {
-		return 0, err
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get endpoint for pod %s: %w", podName, err)
 	}
 
-	return countClusterMemberNodes(clusterNodes), nil
-}
-
-// countClusterMemberNodes는 CLUSTER NODES 출력에서 "실제 멤버(master/slave)" 수를 계산합니다.
-// - fail/fail? 상태라도 master/slave 플래그가 있으면 멤버로 간주합니다.
-// - handshake/noaddr 등 role 플래그가 없는 임시 엔트리는 제외합니다.
-// - 동일 node id(또는 주소) 중복 엔트리는 1회만 카운트합니다.
-func countClusterMemberNodes(nodes []ClusterNode) int32 {
-	seen := make(map[string]struct{}, len(nodes))
-	var count int32
-
-	for _, node := range nodes {
-		if !node.IsLeader() && !node.IsFollower() {
-			continue
-		}
-
-		key := node.NodeID
-		if key == "" {
-			key = node.AddressAndHostName
-		}
-		if key == "" {
-			continue
-		}
-
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		count++
+	present, err := checkRedisNodePresenceByEndpoint(clusterNodes, podEndpoint)
+	if err != nil {
+		return false, fmt.Errorf("failed to check redis node presence by endpoint: %w", err)
 	}
-	return count
-}
-
-// countAliveLeaderNodes는 "master"이면서 fail/disconnected가 아닌 노드 수를 계산합니다.
-// 다운스케일과 같이 엄격한 안정성 기준이 필요한 경로에서 사용합니다.
-func countAliveLeaderNodes(nodes []ClusterNode) int32 {
-	seen := make(map[string]struct{}, len(nodes))
-	var count int32
-
-	for _, node := range nodes {
-		if !node.IsLeader() || node.IsFailedOrDisconnected() {
-			continue
-		}
-
-		key := node.NodeID
-		if key == "" {
-			key = node.AddressAndHostName
-		}
-		if key == "" {
-			continue
-		}
-
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		count++
-	}
-	return count
+	return present, nil
 }
 
 // GetNodeIDByPod returns the current Redis node ID for a pod.
@@ -156,10 +151,10 @@ func GetNodeIDByPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.
 	return nodeID, nil
 }
 
-// GetEffectiveMasterNodeIDByPod returns:
+// GetMasterNodeIDByPod returns:
 // - node's own ID if pod is currently master
 // - its upstream master ID if pod is currently follower
-func GetEffectiveMasterNodeIDByPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (string, error) {
+func GetMasterNodeIDByPod(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (string, error) {
 	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
 		return "", err
@@ -184,6 +179,50 @@ func GetEffectiveMasterNodeIDByPod(ctx context.Context, client kubernetes.Interf
 	}
 
 	return "", fmt.Errorf("node %s for pod %s not found in cluster", nodeID, podName)
+}
+
+// GetFollowerNodeIDsByMasterNodeID returns follower node-ids replicating from masterNodeID.
+func GetFollowerNodeIDsByMasterNodeID(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, masterNodeID string) ([]string, error) {
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
+	if err != nil {
+		return nil, err
+	}
+
+	followerIDs := make([]string, 0, 2)
+	seen := make(map[string]struct{})
+	for _, node := range clusterNodes {
+		if node.NodeID == "" || !node.IsFollower() {
+			continue
+		}
+		if node.MasterID != masterNodeID {
+			continue
+		}
+		if _, ok := seen[node.NodeID]; ok {
+			continue
+		}
+		seen[node.NodeID] = struct{}{}
+		followerIDs = append(followerIDs, node.NodeID)
+	}
+	sort.Strings(followerIDs)
+	return followerIDs, nil
+}
+
+// IsNodeIDInCluster returns whether nodeID currently exists in CLUSTER NODES output.
+func IsNodeIDInCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, nodeID string) (bool, error) {
+	if nodeID == "" {
+		return false, nil
+	}
+
+	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
+	if err != nil {
+		return false, err
+	}
+	for _, node := range clusterNodes {
+		if node.NodeID == nodeID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // getRedisNodeID는 지정된 Pod의 Redis 노드 ID를 반환합니다.
@@ -294,20 +333,19 @@ func IsLeaderNode(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2
 	return false, nil
 }
 
-func checkRedisNodePresence(nodes []ClusterNode, podIPOrHostname string) bool {
-	// clusterNode.AddressAndHostName -> ip:port@cport 또는 ip:port@cport,hostname
-	// IPv4: "10.0.0.1:6379@16379" 또는 IPv6: "[2001:db8::1]:6379@16379"
+func checkRedisNodePresenceByEndpoint(nodes []ClusterNode, targetEndpoint *redisservice.EndpointInfo) (bool, error) {
 	for _, node := range nodes {
-		// IP 비교
-		ip, err := node.GetIP()
-		if err == nil && ip == podIPOrHostname {
-			return true
+		endpoint, err := node.GetEndpoint()
+		if err != nil {
+			continue
 		}
-		// Hostname(FQDN) 비교 - v7에서 cluster-announce-hostname 사용 시
-		hostname := node.GetHostname()
-		if hostname != "" && hostname == podIPOrHostname {
-			return true
+		equal, err := endpoint.Compare(targetEndpoint)
+		if err != nil {
+			return false, err
+		}
+		if equal {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

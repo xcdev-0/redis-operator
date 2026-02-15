@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/redisservice"
 )
 
 // ClusterNode는 CLUSTER NODES 명령의 응답을 파싱한 구조체입니다.
@@ -16,7 +17,7 @@ type ClusterNode struct {
 	// node id
 	NodeID string
 	// 10.0.0.1:6379@16379,redis-cluster-leader-0.<headless-svc>.svc.cluster.local"
-	AddressAndHostName string
+	address string
 	// master,myself,fail
 	Flags string
 	// master node id (slave인 경우, 아니면 "-")
@@ -59,14 +60,14 @@ func GetClusterNodes(ctx context.Context, redisClient *redis.Client) ([]ClusterN
 		}
 
 		node := ClusterNode{
-			NodeID:             record[0],
-			AddressAndHostName: record[1],
-			Flags:              record[2],
-			MasterID:           record[3],
-			Ping:               record[4],
-			Pong:               record[5],
-			Epoch:              record[6],
-			State:              record[7],
+			NodeID:   record[0],
+			address:  record[1],
+			Flags:    record[2],
+			MasterID: record[3],
+			Ping:     record[4],
+			Pong:     record[5],
+			Epoch:    record[6],
+			State:    record[7],
 		}
 
 		// 슬롯은 8번째 인덱스부터 시작 (여러 개일 수 있음)
@@ -97,56 +98,34 @@ func (node *ClusterNode) IsFailedOrDisconnected() bool {
 	return node.IsFailed() || strings.EqualFold(strings.TrimSpace(node.State), "disconnected") || node.HasFlagType("disconnected")
 }
 
-// GetIP는 ClusterNode의 AddressAndHostName에서 IP를 추출합니다.
-//   - 호스트네임이 있는 경우 (Redis v6+ with cluster-announce-hostname):
-//     "10.0.0.1:6379@16379,redis-cluster-leader-0.svc.cluster.local" → "10.0.0.1"
-//     "[2001:db8::1]:6379@16379,redis-cluster-leader-0.svc.cluster.local" → "2001:db8::1"
-//   - 호스트네임이 없는 경우 (Redis v6 이하 또는 호스트네임 미설정):
-//     "10.0.0.1:6379@16379" → "10.0.0.1"
-//     "[2001:db8::1]:6379@16379" → "2001:db8::1"
-func (node *ClusterNode) GetIP() (string, error) {
-	parts := strings.Split(node.AddressAndHostName, ",")
-
-	// 첫 번째 부분은 항상 "ip:port@cport" 또는 "[ipv6]:port@cport" 형식
+func (node *ClusterNode) GetEndpoint() (*redisservice.EndpointInfo, error) {
+	parts := strings.Split(node.address, ",")
 	if len(parts) == 0 {
-		return "", fmt.Errorf("empty address field")
+		return nil, fmt.Errorf("empty address field")
 	}
 
-	// "10.0.0.1:6379@16379" 또는 "[2001:db8::1]:6379@16379"
-	ipPortCPort := parts[0]
-
-	// @ 기준으로 split해서 "ip:port" 부분만 추출
-	ipPortParts := strings.Split(ipPortCPort, "@")
+	// ip:port@cport,hostname
+	ipPortAndBusPort := parts[0]
+	ipPortParts := strings.Split(ipPortAndBusPort, "@")
 	if len(ipPortParts) == 0 {
-		return "", fmt.Errorf("invalid address format: %s", node.AddressAndHostName)
+		return nil, fmt.Errorf("invalid address format: %s", ipPortAndBusPort)
 	}
-	ipPort := ipPortParts[0] // "10.0.0.1:6379" 또는 "[2001:db8::1]:6379"
-
-	// net.SplitHostPort를 사용하면 IPv4/IPv6 모두 안전하게 처리 가능
-	host, _, err := net.SplitHostPort(ipPort)
+	ip, port, err := net.SplitHostPort(ipPortParts[0])
 	if err != nil {
-		return "", fmt.Errorf("failed to parse host:port from %s: %w", ipPort, err)
+		return nil, fmt.Errorf("failed to split host and port: %w", err)
 	}
 
-	if host == "" {
-		return "", fmt.Errorf("failed to extract IP from address: %s", node.AddressAndHostName)
+	endpoint := &redisservice.EndpointInfo{
+		IP:   ip,
+		Port: port,
 	}
 
-	return host, nil
-}
-
-// GetHostname은 ClusterNode의 AddressAndHostName에서 호스트네임을 추출합니다.
-//   - 호스트네임이 있는 경우 (Redis v7+ with cluster-announce-hostname):
-//     "10.0.0.1:6379@16379,redis-cluster-leader-0.svc.cluster.local" → "redis-cluster-leader-0.svc.cluster.local"
-//   - 호스트네임이 없는 경우:
-//     "10.0.0.1:6379@16379" → ""
-func (node *ClusterNode) GetHostname() string {
-	parts := strings.Split(node.AddressAndHostName, ",")
-	if len(parts) < 2 {
-		return "" // 호스트네임 없음
+	if len(parts) >= 2 {
+		fqdn := parts[1]
+		endpoint.FQDN = &fqdn
 	}
-	hostname := strings.TrimSpace(parts[1])
-	return hostname
+
+	return endpoint, nil
 }
 
 // ex: master,myself,fail

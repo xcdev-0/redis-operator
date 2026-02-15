@@ -14,6 +14,12 @@ func GetNodePortServiceName(clusterName, role string, index int) string {
 	return clusterName + "-" + role + "-" + strconv.Itoa(index)
 }
 
+// GetNodePortServiceNameFromPodName returns the per-pod NodePort service name.
+// Current naming rule is identical to pod name (e.g. "cluster-leader-0").
+func GetNodePortServiceNameFromPodName(podName string) string {
+	return podName
+}
+
 // GetPodName은 Redis Cluster Pod 이름을 생성합니다.
 // 예: GetPodName("clustername", "leader", 0) -> "clustername-leader-0"
 func GetPodName(clusterName, role string, index int) string {

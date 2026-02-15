@@ -9,6 +9,9 @@ import (
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/envs"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -22,16 +25,40 @@ type RedisDetails struct {
 
 // EndpointInfo는 Redis 엔드포인트의 호스트와 포트 정보를 담습니다.
 type EndpointInfo struct {
-	Host string
+	IP   string // ip는 항상 존재
 	Port string
+	FQDN *string // FQDN은 선택적으로 존재
 }
 
-// String은 EndpointInfo를 "host:port" 형태의 문자열로 변환합니다.
-func (e *EndpointInfo) String() string {
+func (e *EndpointInfo) Compare(target *EndpointInfo) (bool, error) {
+	if target == nil {
+		return false, fmt.Errorf("target is nil")
+	}
+
+	selfIP := normalizeHostForCompare(e.IP)
+	targetIP := normalizeHostForCompare(target.IP)
+	selfFQDN := normalizeHostForCompare(derefString(e.FQDN))
+	targetFQDN := normalizeHostForCompare(derefString(target.FQDN))
+
+	if e.FQDN != nil && target.FQDN != nil &&
+		selfFQDN == targetFQDN && e.Port == target.Port {
+		return true, nil
+	}
+	if selfIP == targetIP && e.Port == target.Port {
+		return true, nil
+	}
+	return false, nil
+}
+
+// HostAndPort은 EndpointInfo를 "host:port" 형태의 문자열로 변환합니다.
+func (e *EndpointInfo) HostAndPort() string {
 	if e == nil {
 		return ""
 	}
-	return e.Host + ":" + e.Port
+	if e.FQDN != nil {
+		return *e.FQDN + ":" + e.Port
+	}
+	return e.IP + ":" + e.Port
 }
 
 func getHeadlessServiceNameFromPodName(podName string) string {
@@ -45,89 +72,105 @@ func getHeadlessServiceNameFromPodName(podName string) string {
 	return podName
 }
 
-func (rd *RedisDetails) FQDN() string {
-	return fmt.Sprintf("%s.%s.%s.svc.%s",
+func (rd *RedisDetails) FQDN() *string {
+	fqdn := fmt.Sprintf("%s.%s.%s.svc.%s",
 		rd.PodName,
 		getHeadlessServiceNameFromPodName(rd.PodName),
 		rd.Namespace,
 		envs.GetServiceDNSDomain(),
 	)
+	return &fqdn
 }
 
-// GetEndpoint는 Redis Pod의 엔드포인트 주소(host:port)를 반환합니다.
-// ServiceType과 무관하게 클러스터 내부 통신을 위해 Pod IP 또는 FQDN을 사용합니다.
-func GetEndpoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (string, error) {
-	endpoint, err := getEndPoint(ctx, client, cr, rd)
+func GetEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
+	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
+		return getNodePortEndpoint(ctx, client, cr, rd)
+	}
+	return getPodNetworkEndpoint(ctx, client, cr, rd)
+}
+
+func getNodePortEndpoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
+	svcName := k8smeta.GetNodePortServiceNameFromPodName(rd.PodName)
+	svc, err := getService(ctx, client, cr.Namespace, svcName)
 	if err != nil {
-		return "", fmt.Errorf("failed to get endpoint for pod %s: %w", rd.PodName, err)
+		return nil, fmt.Errorf("failed to get NodePort service %s: %w", svcName, err)
 	}
-	return endpoint.String(), nil
-}
+	if svc.Spec.Type != corev1.ServiceTypeNodePort {
+		return nil, fmt.Errorf("service %s is not NodePort type", svcName)
+	}
 
-// GetEndPointIP는 Redis Pod의 IP 주소만 반환합니다 (포트 제외).
-func GetEndPointIP(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (string, error) {
-	endpoint, err := getEndPoint(ctx, client, cr, rd)
+	svcPort := getServicePortByName(svc, consts.RedisClientPortName)
+	if svcPort == nil || svcPort.NodePort == 0 {
+		return nil, fmt.Errorf("redis client NodePort is not set for service %s", svcName)
+	}
+
+	pod, err := client.CoreV1().Pods(rd.Namespace).Get(ctx, rd.PodName, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to get endpoint for pod %s: %w", rd.PodName, err)
+		log.FromContext(ctx).Error(err, "Error in getting Redis pod host IP", "namespace", rd.Namespace, "podName", rd.PodName)
+		return nil, err
 	}
-	return endpoint.Host, nil
-}
-
-// getEndPoint는 Redis Pod의 엔드포인트 정보를 반환합니다.
-// Operator는 클러스터 내부에서 실행되므로 ServiceType과 무관하게
-// Pod IP 또는 FQDN을 사용하여 직접 통신합니다.
-func getEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
-	port := cr.GetClientPort()
-	var host string
-
-	// Redis v7에서는 FQDN 사용 (IP 변경에 더 안정적)
-	if cr.Spec.ClusterVersion != nil && *cr.Spec.ClusterVersion == "v7" {
-		host = rd.FQDN()
-	} else {
-		// Redis v6 이하에서는 Pod IP 사용
-		host = GetRedisPodIP(ctx, client, rd)
-		if host == "" {
-			return nil, fmt.Errorf("failed to get Redis pod IP for pod %s", rd.PodName)
-		}
-		// IPv6인 경우 대괄호로 감싸기
-		if net.ParseIP(host).To4() == nil {
-			host = "[" + host + "]"
-		}
+	if pod.Status.HostIP == "" {
+		return nil, fmt.Errorf("pod %s host IP is empty", rd.PodName)
 	}
-	// if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-	// 	svc, err := getService(ctx, client, cr.Namespace, rd.PodName) //nodeport 서비스는 팟과 이름 같음
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	if svc.Spec.Type != corev1.ServiceTypeNodePort {
-	// 		return nil, errors.New("service type mismatch")
-	// 	}
-	// 	svcPort, ok := lo.Find(svc.Spec.Ports, func(item corev1.ServicePort) bool {
-	// 		return item.Name == consts.RedisClientPortName // redis-client
-	// 	})
-	// 	if ok {
-	// 		port = int(svcPort.NodePort)
-	// 	}
-	// 	pod, err := client.CoreV1().Pods(rd.Namespace).Get(ctx, rd.PodName, metav1.GetOptions{})
-	// 	if err != nil {
-	// 		log.FromContext(ctx).Error(err, "")
-	// 		return nil, err
-	// 	}
-	// 	host = pod.Status.HostIP
-	// }
+
 	return &EndpointInfo{
-		Host: host,
-		Port: strconv.Itoa(port),
+		IP:   formatIP(pod.Status.HostIP),
+		Port: strconv.Itoa(int(svcPort.NodePort)),
 	}, nil
 }
 
-// func getService(ctx context.Context, client kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
-// 	serviceInfo, err := client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return serviceInfo, nil
-// }
+func getPodNetworkEndpoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
+	port := strconv.Itoa(cr.GetClientPort())
+	var endpoint *EndpointInfo = &EndpointInfo{}
+
+	endpoint.Port = port
+	ip := GetRedisPodIP(ctx, client, rd)
+	if ip == "" {
+		return nil, fmt.Errorf("failed to get Redis pod IP for pod %s", rd.PodName)
+	}
+	endpoint.IP = formatIP(ip)
+	// Redis v7+에서만 cluster-announce-hostname 경로를 사용합니다.
+	// v6 이하에서는 멤버십 주소 체계를 IP로 유지해야 비교/운영이 일관됩니다.
+	if cr.Spec.ClusterVersion != nil && *cr.Spec.ClusterVersion == "v7" {
+		endpoint.FQDN = rd.FQDN()
+	}
+	return endpoint, nil
+}
+
+func formatIP(ip string) string {
+	if formatted := net.ParseIP(ip); formatted != nil && formatted.To4() == nil {
+		return "[" + ip + "]"
+	}
+	return ip
+}
+
+func normalizeHostForCompare(host string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func getService(ctx context.Context, client kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
+	serviceInfo, err := client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return serviceInfo, nil
+}
+
+func getServicePortByName(svc *corev1.Service, portName string) *corev1.ServicePort {
+	for i := range svc.Spec.Ports {
+		if svc.Spec.Ports[i].Name == portName {
+			return &svc.Spec.Ports[i]
+		}
+	}
+	return nil
+}
 
 func GetRedisPodIP(ctx context.Context, client kubernetes.Interface, redisInfo RedisDetails) string {
 	log.FromContext(ctx).V(1).Info("Fetching Redis pod", "namespace", redisInfo.Namespace, "podName", redisInfo.PodName)
