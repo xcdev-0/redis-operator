@@ -4,7 +4,7 @@ set -e  # 에러 발생시 중단
 
 cd ../
 
-VERSION="v7"
+VERSION="v1.0.4"
 IMAGE_NAME="redis-operator"
 IMAGE="${IMAGE_NAME}:${VERSION}"
 

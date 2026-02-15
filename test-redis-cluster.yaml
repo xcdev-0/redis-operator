@@ -1,10 +1,10 @@
 apiVersion: ejlabs.in/v1beta2
 kind: RedisCluster
 metadata:
-  name: hello
+  name: second5
   namespace: default
 spec:
-  clusterSize: 3
+  clusterSize: 4
   clusterVersion: v7
   
   storage:

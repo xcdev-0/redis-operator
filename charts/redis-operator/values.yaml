@@ -14,7 +14,7 @@ controllerManager:
       readOnlyRootFilesystem: true
     image:
       repository: redis-operator
-      tag: v7
+      tag: v1.0.4
     imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -24,7 +24,7 @@ controllerManager:
         cpu: 10m
         memory: 64Mi
     env:
-      initContainerImage: redis-operator:v7
+      initContainerImage: redis-operator:v1.0.4
   nodeSelector: {}
   podSecurityContext:
     runAsNonRoot: true
