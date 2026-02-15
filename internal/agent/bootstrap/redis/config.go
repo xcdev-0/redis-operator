@@ -1,13 +1,10 @@
 package bootstrap
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -71,16 +68,17 @@ func applyCluster(cfg *agentutil.Config,
 	redisMajorVersion string) {
 
 	// 클러스터 노드 간 통신을 위한 IP 주소 설정
-	var err error
 	var clusterAnnounceIP string
 	if nodePortEnabled == "true" {
 		// NodePort 모드: 노드의 실제 IP 주소 사용
-		clusterAnnounceIP = os.Getenv("HOST_IP")
+		clusterAnnounceIP = strings.TrimSpace(os.Getenv("HOST_IP"))
 	} else {
 		// 일반 모드: Pod의 로컬 IP 주소 사용
-		clusterAnnounceIP, err = util.GetLocalIP()
-		if err != nil {
-			log.Printf("Warning: Failed to get local IP: %v", err)
+		localIP, localIPErr := util.GetLocalIP()
+		if localIPErr != nil {
+			log.Printf("Warning: Failed to get local IP: %v", localIPErr)
+		} else {
+			clusterAnnounceIP = strings.TrimSpace(localIP)
 		}
 	}
 	if clusterAnnounceIP != "" {
@@ -103,19 +101,9 @@ func applyCluster(cfg *agentutil.Config,
 	cfg.Append("cluster-enabled", "yes")              // 클러스터 모드 활성화
 	cfg.Append("cluster-node-timeout", "5000")        // 노드 타임아웃 (5초): 이 시간 동안 응답 없으면 노드를 실패로 간주
 	cfg.Append("cluster-require-full-coverage", "no") // 전체 슬롯 커버리지 불필요: 일부 슬롯이 없어도 클러스터 동작
-	cfg.Append("cluster-migration-barrier", "1")      // 마이그레이션 배리어: 리더가 1개만 남아도 마이그레이션 허용
-	cfg.Append("cluster-config-file", nodeConfPath)   // 클러스터 설정 파일 경로
-
-	// nodes.conf 파일의 IP 주소 업데이트
-	if ip, err := util.GetLocalIP(); err != nil {
-		log.Printf("Warning: Failed to get local IP: %v", err)
-	} else {
-		// nodes.conf 파일에서 "myself" 라인의 IP 주소를 현재 Pod IP로 업데이트
-		_, err = updateMyselfIP(nodeConfPath, strings.TrimSpace(ip))
-		if err != nil {
-			log.Printf("Warning: Failed to update nodes.conf: %v", err)
-		}
-	}
+	// cfg.Append("cluster-migration-barrier", "1")      // 마이그레이션 배리어: 리더가 1개만 남아도 마이그레이션 허용
+	cfg.Append("cluster-allow-replica-migration", "no")
+	cfg.Append("cluster-config-file", nodeConfPath) // 클러스터 설정 파일 경로
 }
 
 // applyTLS는 TLS 암호화 설정을 적용합니다.
@@ -259,55 +247,4 @@ func applyExternalConfig(cfg *agentutil.Config, externalConfigDir string) {
 		fmt.Printf("  - %s\n", filepath.Base(file))
 		cfg.Append("include", file)
 	}
-}
-
-func updateMyselfIP(nodesConfPath, newIP string) (updated []byte, err error) {
-	// nodes.conf 파일 읽기
-	raw, err := os.ReadFile(nodesConfPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// IP 주소를 찾기 위한 정규식: IPv4 주소 패턴
-	// 예: "192.168.1.1", "10.0.0.1" 등
-	ipRe := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
-
-	var out bytes.Buffer                              // 출력 버퍼: 업데이트된 내용을 저장
-	scanner := bufio.NewScanner(bytes.NewReader(raw)) // 파일 내용을 한 줄씩 읽기
-	changed := false                                  // IP 주소가 변경되었는지 여부
-
-	// 파일을 한 줄씩 읽으면서 처리
-	for scanner.Scan() {
-		line := scanner.Text() // 현재 라인
-
-		// "myself" 라벨이 있는 라인인지 확인
-		// nodes.conf 파일 형식 예시:
-		//   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 192.168.1.1:6379@16379 myself,master ..."
-		if bytes.Contains([]byte(line), []byte("myself")) {
-			// 이 라인의 모든 IP 주소를 새로운 IP로 교체
-			replaced := ipRe.ReplaceAllString(line, newIP)
-			if replaced != line {
-				changed = true // 변경사항이 있음
-				line = replaced
-			}
-		}
-
-		// 처리된 라인을 출력 버퍼에 추가
-		out.WriteString(line)
-		out.WriteByte('\n')
-	}
-
-	// 스캔 중 에러 확인
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	// 변경사항이 있으면 파일에 저장
-	if changed {
-		updatedBytes := out.Bytes()
-		return updatedBytes, os.WriteFile(nodesConfPath, updatedBytes, 0o644)
-	}
-
-	// 변경사항이 없으면 nil 반환
-	return nil, nil
 }

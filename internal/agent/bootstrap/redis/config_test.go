@@ -2,43 +2,38 @@ package bootstrap
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	agentutil "github.com/xcdev-0/redis-operator/internal/agent/util"
 )
 
-func Test_updateMyselfIP(t *testing.T) {
-	testData := `7a6b5f4f99496c97f4e32c30c077aa95cab92664 10.244.0.246:0@16379,,tls-port=6379,shard-id=a03445a0d3f6d405af261041e0cb77a8a176f42b slave b66f2fa597eeda567cf05f3701419be9a3b2f50e 0 1756463509000 1 connected
-93ad60e9ce21430683a3534d2c96ab1b8077cfe8 10.244.0.237:0@16379,,tls-port=6379,shard-id=2f177491b895051f91e91e554a2a9da2cd167aeb master - 0 1756463509685 2 connected 5461-10922
-b66f2fa597eeda567cf05f3701419be9a3b2f50e 10.244.0.222:0@16379,,tls-port=6379,shard-id=a03445a0d3f6d405af261041e0cb77a8a176f42b myself,master - 0 0 1 connected 0-5460
-88456cac1830f3e00f6ab681fb819b4b1d7ad36b 10.244.0.252:0@16379,,tls-port=6379,shard-id=b61110535f09b9c0703517f79da79118fee8d1a4 slave 580e234a8dcd74717c37d01ed8097929c64536ff 0 1756463509691 3 connected
-580e234a8dcd74717c37d01ed8097929c64536ff 10.244.0.240:0@16379,,tls-port=6379,shard-id=b61110535f09b9c0703517f79da79118fee8d1a4 master - 0 1756463509583 3 connected 10923-16383
-c0fc3c21460fec045775d2dcde220fb26ca668c1 10.244.0.249:0@16379,,tls-port=6379,shard-id=2f177491b895051f91e91e554a2a9da2cd167aeb slave 93ad60e9ce21430683a3534d2c96ab1b8077cfe8 0 1756463509583 2 connected
-vars currentEpoch 3 lastVoteEpoch 0
-`
-
-	tmpFile := "/tmp/test_nodes.conf"
-	err := os.WriteFile(tmpFile, []byte(testData), 0o644)
+func TestApplyClusterWritesClusterConfigFileDirective(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "redis-bootstrap-test-*")
 	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
+		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.Remove(tmpFile)
+	defer os.RemoveAll(tmpDir)
 
-	newIP := "10.244.0.9"
-	updated, err := updateMyselfIP(tmpFile, newIP)
+	cfgPath := filepath.Join(tmpDir, "redis.conf")
+	cfg := agentutil.NewConfig(cfgPath, "")
+
+	applyCluster(cfg, "false", "/node-conf", "v7")
+	if err := cfg.Commit(); err != nil {
+		t.Fatalf("failed to commit config: %v", err)
+	}
+
+	bs, err := os.ReadFile(cfgPath)
 	if err != nil {
-		t.Errorf("updateMyselfIP() error = %v", err)
+		t.Fatalf("failed to read config file: %v", err)
 	}
+	content := string(bs)
 
-	if updated == nil {
-		t.Errorf("Expected changes to be made, but updated is nil")
-		return
+	if !strings.Contains(content, "cluster-config-file /node-conf/nodes.conf") {
+		t.Fatalf("expected cluster-config-file directive, got:\n%s", content)
 	}
-	expectedContent := strings.ReplaceAll(testData, "10.244.0.222", newIP)
-	updatedContent := string(updated)
-
-	if updatedContent != expectedContent {
-		t.Errorf("Expected updated content to match:\nExpected:\n%s\nGot:\n%s", expectedContent, updatedContent)
+	if !strings.Contains(content, "cluster-allow-replica-migration no") {
+		t.Fatalf("expected cluster-allow-replica-migration directive, got:\n%s", content)
 	}
-
-	t.Logf("Successfully updated nodes.conf with new IP %s", newIP)
 }

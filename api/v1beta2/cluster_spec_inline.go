@@ -18,11 +18,11 @@ func (cr *RedisClusterSpec) getRoleSpec(role string) *RedisRoleSpec {
 	return nil
 }
 
-// GetReplicaCount는 역할에 해당하는 레플리카 수를 반환합니다.
-// 역할별 설정이 없으면 ClusterSize를 사용합니다.
-func (cr *RedisClusterSpec) GetReplicaCount(role string) int32 {
-	if rs := cr.getRoleSpec(role); rs != nil && rs.ReplicaCount != nil {
-		return *rs.ReplicaCount
+// GetReplicaCount는 역할(leader/follower)과 무관하게 ClusterSize를 반환합니다.
+// 리더/팔로워 replica를 분리 입력하지 않도록 단일 스케일 소스로 고정합니다.
+func (cr *RedisClusterSpec) GetReplicaCount(_ string) int32 {
+	if cr == nil || cr.ClusterSize == nil {
+		return 0
 	}
 	return *cr.ClusterSize
 }

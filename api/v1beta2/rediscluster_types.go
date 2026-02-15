@@ -24,7 +24,8 @@ type RedisCluster struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of RedisCluster
+	// spec defines the desired state of RedisCluster.
+	// Replica scale source is spec.clusterSize (leader/follower replicaCount overrides are ignored).
 	// +required
 	Spec RedisClusterSpec `json:"spec"`
 
