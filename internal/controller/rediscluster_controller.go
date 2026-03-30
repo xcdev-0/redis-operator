@@ -24,6 +24,8 @@ import (
 
 	"github.com/avast/retry-go"
 	intctrlutil "github.com/xcdev-0/redis-operator/internal/controllerutil"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/clustermembership"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/clusterresource"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,7 +38,6 @@ import (
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	redisclusterv1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/cluster"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -101,7 +102,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return result, err
 	}
 
-	if err := cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr); err != nil {
+	if err := clusterresource.UpdateRedisRoleLabels(ctx, r.K8sClient, cr); err != nil {
 		return intctrlutil.RequeueE(ctx, err, "failed to update redis role labels")
 	}
 
@@ -147,7 +148,7 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 	for ordinalToRemove := lastOrdinalToRemove; ordinalToRemove >= firstOrdinalToRemove; ordinalToRemove-- {
 		leaderPod := k8smeta.GetPodName(cr.Name, "leader", int(ordinalToRemove))
 
-		sourceMasterNodeID, err := cluster.GetMasterNodeIDByPod(ctx, r.K8sClient, cr, leaderPod)
+		sourceMasterNodeID, err := clustermembership.GetMasterNodeIDByPod(ctx, r.K8sClient, cr, leaderPod)
 		if err != nil {
 			logger.Info("failed to resolve source master from overflow leader pod; skipping ordinal",
 				"Ordinal", ordinalToRemove,
@@ -155,7 +156,7 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 				"Error", err.Error())
 			continue
 		}
-		sourceMasterJoined, err := cluster.IsNodeIDInCluster(ctx, r.K8sClient, cr, sourceMasterNodeID)
+		sourceMasterJoined, err := clustermembership.IsNodeIDInCluster(ctx, r.K8sClient, cr, sourceMasterNodeID)
 		if err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to check source master node id cluster membership for overflow ordinal")
 			return result, true, requeueErr
@@ -182,28 +183,28 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 			return result, true, requeueErr
 		}
 
-		attachedFollowerNodeIDs, err := cluster.GetFollowerNodeIDsByMasterNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID)
+		attachedFollowerNodeIDs, err := clustermembership.GetFollowerNodeIDsByMasterNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID)
 		logger.Info("attached follower node ids", "Attached.Follower.NodeIDs", attachedFollowerNodeIDs)
 		if err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get follower node ids by source master node id")
 			return result, true, requeueErr
 		}
 		for _, followerNodeID := range attachedFollowerNodeIDs {
-			if err := cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, followerNodeID); err != nil {
+			if err := clustermembership.RemoveRedisNodeByID(ctx, r.K8sClient, cr, followerNodeID); err != nil {
 				result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to remove attached follower node during downscale")
 				return result, true, requeueErr
 			}
 		}
 
-		if err := cluster.ReshardRedisClusterByNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID, transferMasterNodeID); err != nil {
+		if err := clustermembership.ReshardRedisClusterByNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID, transferMasterNodeID); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to reshard cluster during leader downscale")
 			return result, true, requeueErr
 		}
-		if err := cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, sourceMasterNodeID); err != nil {
+		if err := clustermembership.RemoveRedisNodeByID(ctx, r.K8sClient, cr, sourceMasterNodeID); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to remove source master node during downscale")
 			return result, true, requeueErr
 		}
-		if err := cluster.RebalanceRedisCluster(ctx, r.K8sClient, cr); err != nil {
+		if err := clustermembership.RebalanceRedisCluster(ctx, r.K8sClient, cr); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance cluster after downscale node removal")
 			return result, true, requeueErr
 		}
@@ -242,7 +243,7 @@ func (r *RedisClusterReconciler) reconcileStatefulResources(ctx context.Context,
 	}
 
 	if plan.desiredLeaderReplicas > 0 {
-		if err := cluster.CreateRedisLeaderService(ctx, cr, r.K8sClient); err != nil {
+		if err := clusterresource.CreateRedisLeaderService(ctx, cr, r.K8sClient); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis leader service")
 			return result, true, requeueErr
 		}
@@ -265,7 +266,7 @@ func (r *RedisClusterReconciler) reconcileStatefulResources(ctx context.Context,
 			return result, true, requeueErr
 		}
 	}
-	if err := cluster.CreateRedisLeaderSTS(ctx, cr, r.K8sClient); err != nil {
+	if err := clusterresource.CreateRedisLeaderSTS(ctx, cr, r.K8sClient); err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis leader")
 		return result, true, requeueErr
 	}
@@ -287,7 +288,7 @@ func (r *RedisClusterReconciler) reconcileStatefulResources(ctx context.Context,
 	}
 
 	if plan.desiredFollowerReplicas != 0 {
-		if err := cluster.CreateRedisFollowerService(ctx, cr, r.K8sClient); err != nil {
+		if err := clusterresource.CreateRedisFollowerService(ctx, cr, r.K8sClient); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis follower service")
 			return result, true, requeueErr
 		}
@@ -308,7 +309,7 @@ func (r *RedisClusterReconciler) reconcileStatefulResources(ctx context.Context,
 			return result, true, requeueErr
 		}
 	}
-	if err := cluster.CreateRedisFollowerSTS(ctx, cr, r.K8sClient); err != nil {
+	if err := clusterresource.CreateRedisFollowerSTS(ctx, cr, r.K8sClient); err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis follower statefulset")
 		return result, true, requeueErr
 	}
@@ -336,7 +337,7 @@ func (r *RedisClusterReconciler) reconcileBootstrapStatus(ctx context.Context, c
 func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context, cr *rcvb2.RedisCluster, plan replicaPlan) (ctrl.Result, bool, error) {
 	logger := log.FromContext(ctx)
 
-	nodeCount, err := cluster.GetClusterNodeCount(ctx, r.K8sClient, cr)
+	nodeCount, err := clustermembership.GetClusterNodeCount(ctx, r.K8sClient, cr)
 	if err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
 		return result, true, requeueErr
@@ -346,7 +347,7 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 	}
 
 	logger.Info("Creating redis cluster by executing cluster creation commands")
-	leaderNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+	leaderNodeCount, err := clustermembership.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
 	if err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
 		return result, true, requeueErr
@@ -364,7 +365,7 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 			"Joined.Leader.Pods", joinedLeaderPodCount,
 			"Instance.Size", plan.desiredLeaderReplicas)
 		if leaderNodeCount <= 1 && joinedLeaderPodCount <= 1 {
-			result, err := cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
+			result, err := clustermembership.CreateRedisCluster(ctx, r.K8sClient, cr)
 			if err != nil {
 				logger.Error(err, "failed to create redis cluster")
 				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis cluster")
@@ -377,11 +378,11 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 				return result, true, err
 			}
 
-			if err := cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr, plan.desiredLeaderReplicas); err != nil {
+			if err := clustermembership.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr, plan.desiredLeaderReplicas); err != nil {
 				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to add leader node to cluster")
 				return requeueResult, true, requeueErr
 			}
-			if err := cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
+			if err := clustermembership.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
 				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance empty masters")
 				return requeueResult, true, requeueErr
 			}
@@ -399,7 +400,7 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 		return result, true, err
 	}
 
-	currentFollowerCount, err := cluster.GetClusterFollowerNodeCount(ctx, r.K8sClient, cr)
+	currentFollowerCount, err := clustermembership.GetClusterFollowerNodeCount(ctx, r.K8sClient, cr)
 	if err != nil {
 		requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster follower node count")
 		return requeueResult, true, requeueErr
@@ -414,7 +415,7 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 			"Leaders.Count", leaderNodeCount,
 			"Instance.Size", plan.desiredLeaderReplicas,
 			"Follower.Replicas", plan.desiredFollowerReplicas)
-		if err := cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr, plan.desiredFollowerReplicas, plan.desiredLeaderReplicas); err != nil {
+		if err := clustermembership.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr, plan.desiredFollowerReplicas, plan.desiredLeaderReplicas); err != nil {
 			requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to execute replication command")
 			return requeueResult, true, requeueErr
 		}
@@ -445,7 +446,7 @@ func (r *RedisClusterReconciler) reconcileClusterHealth(ctx context.Context, cr 
 	logger := log.FromContext(ctx)
 
 	logger.Info("Number of Redis nodes match desired")
-	unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+	unhealthyNodeCount, err := clustermembership.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 	if err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
 		return result, true, requeueErr
@@ -463,12 +464,12 @@ func (r *RedisClusterReconciler) reconcileClusterHealth(ctx context.Context, cr 
 		}
 
 		logger.Info("healthy leader count does not match desired; attempting to repair disconnected masters")
-		if err = cluster.RepairDisconnectedNodes(ctx, r.K8sClient, cr); err != nil {
+		if err = clustermembership.RepairDisconnectedNodes(ctx, r.K8sClient, cr); err != nil {
 			logger.Error(err, "failed to repair disconnected masters")
 		}
 
 		err = retry.Do(func() error {
-			nc, nErr := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+			nc, nErr := clustermembership.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 			if nErr != nil {
 				return nErr
 			}
@@ -483,7 +484,7 @@ func (r *RedisClusterReconciler) reconcileClusterHealth(ctx context.Context, cr 
 			return result, true, requeueErr
 		}
 
-		unhealthyNodeCount, err = cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+		unhealthyNodeCount, err = clustermembership.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 		if err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
 			return result, true, requeueErr
@@ -494,18 +495,18 @@ func (r *RedisClusterReconciler) reconcileClusterHealth(ctx context.Context, cr 
 		}
 	}
 
-	if ncCheck, err := cluster.GetClusterNodeCount(ctx, r.K8sClient, cr); err != nil {
+	if ncCheck, err := clustermembership.GetClusterNodeCount(ctx, r.K8sClient, cr); err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
 		return result, true, requeueErr
 	} else if ncCheck == plan.desiredTotalReplicas {
-		cluster.RebalanceIfEmptyMasterExists(ctx, r.K8sClient, cr)
+		clustermembership.RebalanceIfEmptyMasterExists(ctx, r.K8sClient, cr)
 	}
 
 	if cr.Status.ReadyLeaderReplicas == plan.desiredLeaderReplicas &&
 		cr.Status.ReadyFollowerReplicas == plan.desiredFollowerReplicas &&
 		cr.Status.State != rcvb2.RedisClusterReady &&
 		cr.Status.State != rcvb2.RedisClusterInitializing &&
-		cluster.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
+		clustermembership.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
 		return r.ensureStatus(ctx, cr, rcvb2.RedisClusterStatus{
 			State:                 rcvb2.RedisClusterReady,
 			Reason:                rcvb2.ReadyClusterReason,
@@ -541,7 +542,7 @@ func (r *RedisClusterReconciler) pickTransferMasterNodeID(ctx context.Context, c
 		ordinal := (startOrdinal + offset) % totalCandidates
 		podName := k8smeta.GetPodName(cr.Name, "leader", ordinal)
 
-		joined, err := cluster.IsPodJoinedCluster(ctx, r.K8sClient, cr, podName)
+		joined, err := clustermembership.IsPodJoinedCluster(ctx, r.K8sClient, cr, podName)
 		if err != nil {
 			return "", false, fmt.Errorf("failed to check cluster membership for transfer pod %s: %w", podName, err)
 		}
@@ -549,7 +550,7 @@ func (r *RedisClusterReconciler) pickTransferMasterNodeID(ctx context.Context, c
 			continue
 		}
 
-		masterNodeID, err := cluster.GetMasterNodeIDByPod(ctx, r.K8sClient, cr, podName)
+		masterNodeID, err := clustermembership.GetMasterNodeIDByPod(ctx, r.K8sClient, cr, podName)
 		if err != nil {
 			return "", false, fmt.Errorf("failed to resolve transfer master node id from pod %s: %w", podName, err)
 		}
@@ -566,7 +567,7 @@ func (r *RedisClusterReconciler) pickTransferMasterNodeID(ctx context.Context, c
 func (r *RedisClusterReconciler) ensureClusterStableForMembershipChange(ctx context.Context, cr *rcvb2.RedisCluster, action string) (bool, ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
+	unhealthyNodeCount, err := clustermembership.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 	if err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get unhealthy node count before membership change", "Action", action)
 		return false, result, requeueErr
@@ -575,14 +576,14 @@ func (r *RedisClusterReconciler) ensureClusterStableForMembershipChange(ctx cont
 		logger.Info("cluster has unhealthy nodes, delaying membership change",
 			"Action", action,
 			"Unhealthy.Node.Count", unhealthyNodeCount)
-		if repairErr := cluster.RepairDisconnectedNodes(ctx, r.K8sClient, cr); repairErr != nil {
+		if repairErr := clustermembership.RepairDisconnectedNodes(ctx, r.K8sClient, cr); repairErr != nil {
 			logger.Error(repairErr, "failed to repair disconnected nodes before membership change", "Action", action)
 		}
 		result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*30, "cluster has unhealthy nodes, waiting before membership change", "Action", action)
 		return false, result, requeueErr
 	}
 
-	pendingNodeCount, err := cluster.GetClusterPendingNodeCount(ctx, r.K8sClient, cr)
+	pendingNodeCount, err := clustermembership.GetClusterPendingNodeCount(ctx, r.K8sClient, cr)
 	if err != nil {
 		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get pending node count before membership change", "Action", action)
 		return false, result, requeueErr
@@ -606,7 +607,7 @@ func (r *RedisClusterReconciler) getJoinedRolePodCount(ctx context.Context, cr *
 	var joinedCount int32
 	for ordinal := 0; ordinal < int(desiredReplica); ordinal++ {
 		podName := k8smeta.GetPodName(cr.Name, role, ordinal)
-		joined, err := cluster.IsPodJoinedCluster(ctx, r.K8sClient, cr, podName)
+		joined, err := clustermembership.IsPodJoinedCluster(ctx, r.K8sClient, cr, podName)
 		if err != nil {
 			return 0, fmt.Errorf("failed to check %s cluster membership for %s: %w", role, podName, err)
 		}
@@ -626,7 +627,7 @@ func (r *RedisClusterReconciler) isRoleDownscaleClusterCleanupComplete(ctx conte
 	for ordinal := lastOrdinal; ordinal >= firstOrdinal; ordinal-- {
 		for _, role := range roles {
 			podName := k8smeta.GetPodName(cr.Name, role, int(ordinal))
-			joined, err := cluster.IsPodJoinedCluster(ctx, r.K8sClient, cr, podName)
+			joined, err := clustermembership.IsPodJoinedCluster(ctx, r.K8sClient, cr, podName)
 			if err != nil {
 				return false, fmt.Errorf("failed to check %s cluster membership for %s: %w", role, podName, err)
 			}

@@ -1,4 +1,4 @@
-package cluster
+package clusterresource
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/banzaicloud/k8s-objectmatcher/patch"
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
+	"github.com/xcdev-0/redis-operator/internal/k8sutils/clustermembership"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	utilmaps "github.com/xcdev-0/redis-operator/internal/util/maps"
@@ -165,7 +166,7 @@ func updateRedisRoleLabel(
 	for _, pod := range pods.Items {
 		log.FromContext(ctx).V(1).Info("Checking pod role", "pod", pod.Name)
 
-		isMaster, err := IsLeaderNode(ctx, k8sclient, cr, pod.Name)
+		isMaster, err := clustermembership.IsLeaderNode(ctx, k8sclient, cr, pod.Name)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "failed to check redis role, skipping pod", "pod", pod.Name)
 			continue
