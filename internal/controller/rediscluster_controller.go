@@ -49,6 +49,14 @@ type RedisClusterReconciler struct {
 	Recorder  record.EventRecorder
 }
 
+type replicaPlan struct {
+	desiredLeaderReplicas   int32
+	desiredFollowerReplicas int32
+	desiredTotalReplicas    int32
+	currentLeaderReplicas   int32
+	currentFollowerReplicas int32
+}
+
 // +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
@@ -61,7 +69,6 @@ type RedisClusterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
 	cr := &rcvb2.RedisCluster{}
 	err := r.Get(ctx, req.NamespacedName, cr)
 	if err != nil {
@@ -71,481 +78,456 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if cr.GetDeletionTimestamp() != nil {
 		return intctrlutil.Reconciled()
 	}
-
 	if shouldSkipReconcile(ctx, cr) {
 		return intctrlutil.Reconciled()
 	}
 
 	cr.SetDefault()
+	plan := r.buildReplicaPlan(ctx, cr)
 
-	// replica count
+	if result, handled, err := r.reconcileLeaderDownscale(ctx, cr, plan); err != nil || handled {
+		return result, err
+	}
+	if result, handled, err := r.reconcileStatefulResources(ctx, cr, plan); err != nil || handled {
+		return result, err
+	}
+	if result, handled, err := r.reconcileBootstrapStatus(ctx, cr, plan); err != nil || handled {
+		return result, err
+	}
+	if result, handled, err := r.reconcileClusterMembership(ctx, cr, plan); err != nil || handled {
+		return result, err
+	}
+	if result, handled, err := r.reconcileClusterHealth(ctx, cr, plan); err != nil || handled {
+		return result, err
+	}
+
+	if err := cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr); err != nil {
+		return intctrlutil.RequeueE(ctx, err, "failed to update redis role labels")
+	}
+
+	return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
+}
+
+func (r *RedisClusterReconciler) buildReplicaPlan(ctx context.Context, cr *rcvb2.RedisCluster) replicaPlan {
 	desiredLeaderReplicas := cr.Spec.GetReplicaCount("leader")
-	desiredFollwerReplicas := cr.Spec.GetReplicaCount("follower")
-	desiredTotalReplicas := desiredLeaderReplicas + desiredFollwerReplicas
+	desiredFollowerReplicas := cr.Spec.GetReplicaCount("follower")
 
-	// ================================================
-	// 1. scale in
-	// ================================================
-	// 첫번째로 실행하는 이유는 슬롯 이동 → follower 제거 → rebalance 같은 절차를 강제하기 위함
-	// 다운스케일 로직 진행하지 않고 아래 2,3 스텝에서 sts 팟을 제거하면 위험!!
-	currentLeaderReplicas := r.GetStatefulSetReplicas(ctx, cr.Namespace, cr.Name+"-leader")
-	currentFollowerReplicas := r.GetStatefulSetReplicas(ctx, cr.Namespace, cr.Name+"-follower")
-	if desiredLeaderReplicas < currentLeaderReplicas {
-		if !r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-leader") || !r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-follower") {
-			return intctrlutil.Reconciled()
+	return replicaPlan{
+		desiredLeaderReplicas:   desiredLeaderReplicas,
+		desiredFollowerReplicas: desiredFollowerReplicas,
+		desiredTotalReplicas:    desiredLeaderReplicas + desiredFollowerReplicas,
+		currentLeaderReplicas:   r.GetStatefulSetReplicas(ctx, cr.Namespace, k8smeta.GetStatefulSetName(cr.Name, "leader")),
+		currentFollowerReplicas: r.GetStatefulSetReplicas(ctx, cr.Namespace, k8smeta.GetStatefulSetName(cr.Name, "follower")),
+	}
+}
+
+func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, cr *rcvb2.RedisCluster, plan replicaPlan) (ctrl.Result, bool, error) {
+	logger := log.FromContext(ctx)
+	leaderSTSName := k8smeta.GetStatefulSetName(cr.Name, "leader")
+	followerSTSName := k8smeta.GetStatefulSetName(cr.Name, "follower")
+
+	if plan.desiredLeaderReplicas >= plan.currentLeaderReplicas {
+		return ctrl.Result{}, false, nil
+	}
+	if !r.IsStatefulSetReady(ctx, cr.Namespace, leaderSTSName) || !r.IsStatefulSetReady(ctx, cr.Namespace, followerSTSName) {
+		return ctrl.Result{}, true, nil
+	}
+	if plan.desiredLeaderReplicas <= 0 {
+		result, err := intctrlutil.RequeueE(ctx, fmt.Errorf("desired leader replicas must be greater than zero for downscale"), "invalid downscale target")
+		return result, true, err
+	}
+
+	stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "leader downscale cleanup")
+	if err != nil || !stable {
+		return result, true, err
+	}
+
+	lastOrdinalToRemove := plan.currentLeaderReplicas - 1
+	firstOrdinalToRemove := plan.desiredLeaderReplicas
+	for ordinalToRemove := lastOrdinalToRemove; ordinalToRemove >= firstOrdinalToRemove; ordinalToRemove-- {
+		leaderPod := k8smeta.GetPodName(cr.Name, "leader", int(ordinalToRemove))
+
+		sourceMasterNodeID, err := cluster.GetMasterNodeIDByPod(ctx, r.K8sClient, cr, leaderPod)
+		if err != nil {
+			logger.Info("failed to resolve source master from overflow leader pod; skipping ordinal",
+				"Ordinal", ordinalToRemove,
+				"Leader.Pod", leaderPod,
+				"Error", err.Error())
+			continue
 		}
-		if desiredLeaderReplicas <= 0 {
-			return intctrlutil.RequeueE(ctx, fmt.Errorf("desired leader replicas must be greater than zero for downscale"), "invalid downscale target")
+		sourceMasterJoined, err := cluster.IsNodeIDInCluster(ctx, r.K8sClient, cr, sourceMasterNodeID)
+		if err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to check source master node id cluster membership for overflow ordinal")
+			return result, true, requeueErr
+		}
+		if !sourceMasterJoined {
+			logger.Info("source master node id already absent in cluster membership; skipping ordinal",
+				"Ordinal", ordinalToRemove,
+				"Leader.Pod", leaderPod,
+				"Source.Master.NodeID", sourceMasterNodeID)
+			continue
 		}
 
-		stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "leader downscale cleanup")
-		if err != nil || !stable {
-			return result, err
+		transferMasterNodeID, hasTransferMaster, err := r.pickTransferMasterNodeID(ctx, cr, sourceMasterNodeID, plan.desiredLeaderReplicas, ordinalToRemove)
+		if err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to pick transfer master node id during downscale")
+			return result, true, requeueErr
 		}
-
-		// Step 1: 초과 ordinal 노드를 Redis cluster 멤버십에서 제거합니다.
-		// current>desired인 동안에는 누락 add-node가 아니라 overflow 정리를 우선합니다.
-		lastOrdinalToRemove := currentLeaderReplicas - 1
-		firstOrdinalToRemove := desiredLeaderReplicas
-		for ordinalToRemove := lastOrdinalToRemove; ordinalToRemove >= firstOrdinalToRemove; ordinalToRemove-- {
-			leaderPod := k8smeta.GetPodName(cr.Name, "leader", int(ordinalToRemove))
-
-			// leader pod의 실제 역할이 master면 자기 node-id, replica면 4번째 필드(master-id)를 source로 사용합니다.
-			sourceMasterNodeID, err := cluster.GetMasterNodeIDByPod(ctx, r.K8sClient, cr, leaderPod)
-			if err != nil {
-				logger.Info("failed to resolve source master from overflow leader pod; skipping ordinal",
-					"Ordinal", ordinalToRemove,
-					"Leader.Pod", leaderPod,
-					"Error", err.Error())
-				continue
-			}
-			sourceMasterJoined, err := cluster.IsNodeIDInCluster(ctx, r.K8sClient, cr, sourceMasterNodeID)
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to check source master node id cluster membership for overflow ordinal")
-			}
-			if !sourceMasterJoined {
-				logger.Info("source master node id already absent in cluster membership; skipping ordinal",
-					"Ordinal", ordinalToRemove,
-					"Leader.Pod", leaderPod,
-					"Source.Master.NodeID", sourceMasterNodeID)
-				continue
-			}
-
-			// 대상 master 선택은 ordinal%desiredLeaderReplicas 시작점으로 순회합니다.
-			transferMasterNodeID, hasTransferMaster, err := r.pickTransferMasterNodeID(ctx, cr, sourceMasterNodeID, desiredLeaderReplicas, ordinalToRemove)
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to pick transfer master node id during downscale")
-			}
-			if !hasTransferMaster {
-				logger.Info("no transfer master candidate found yet for overflow source; waiting",
-					"Ordinal", ordinalToRemove,
-					"Source.Master.NodeID", sourceMasterNodeID,
-					"Desired.Leader.Replicas", desiredLeaderReplicas)
-				return intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for transfer master candidate during downscale")
-			}
-
-			// follower 인덱스와 leader 인덱스가 지금은 1:1이지만
-			// 이후에 다배수 follower 환경을 지원할 때는 1:N이 될 수 있음
-			// source master를 기준으로 실제 연결된 follower node-id를 조회하여 제거합니다.
-			attachedFollowerNodeIDs, err := cluster.GetFollowerNodeIDsByMasterNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID)
-			logger.Info("attached follower node ids", "Attached.Follower.NodeIDs", attachedFollowerNodeIDs)
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to get follower node ids by source master node id")
-			}
-			for _, followerNodeID := range attachedFollowerNodeIDs {
-				if err := cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, followerNodeID); err != nil {
-					return intctrlutil.RequeueE(ctx, err, "failed to remove attached follower node during downscale")
-				}
-			}
-
-			if err := cluster.ReshardRedisClusterByNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID, transferMasterNodeID); err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to reshard cluster during leader downscale")
-			}
-
-			if err := cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, sourceMasterNodeID); err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to remove source master node during downscale")
-			}
-
-			if err := cluster.RebalanceRedisCluster(ctx, r.K8sClient, cr); err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to rebalance cluster after downscale node removal")
-			}
-
-			logger.Info("completed one overflow leader ordinal cleanup pass",
+		if !hasTransferMaster {
+			logger.Info("no transfer master candidate found yet for overflow source; waiting",
 				"Ordinal", ordinalToRemove,
 				"Source.Master.NodeID", sourceMasterNodeID,
-				"Transfer.Master.NodeID", transferMasterNodeID,
-				"Removed.Attached.Follower.Count", len(attachedFollowerNodeIDs))
-			return intctrlutil.RequeueAfter(ctx, time.Second*10, "processed one overflow leader ordinal cleanup")
+				"Desired.Leader.Replicas", plan.desiredLeaderReplicas)
+			result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for transfer master candidate during downscale")
+			return result, true, requeueErr
 		}
 
-		// overflow 멤버십 정리는 완료되었고, StatefulSet 축소 허용 여부는
-		// 아래 CreateRedis*STS 호출 직전에서 최종 체크합니다.
-		logger.Info("overflow cluster membership cleanup pass completed; proceeding to statefulset reconcile",
-			"Current.Leader.Replicas", currentLeaderReplicas,
-			"Desired.Leader.Replicas", desiredLeaderReplicas)
+		attachedFollowerNodeIDs, err := cluster.GetFollowerNodeIDsByMasterNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID)
+		logger.Info("attached follower node ids", "Attached.Follower.NodeIDs", attachedFollowerNodeIDs)
+		if err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get follower node ids by source master node id")
+			return result, true, requeueErr
+		}
+		for _, followerNodeID := range attachedFollowerNodeIDs {
+			if err := cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, followerNodeID); err != nil {
+				result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to remove attached follower node during downscale")
+				return result, true, requeueErr
+			}
+		}
+
+		if err := cluster.ReshardRedisClusterByNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID, transferMasterNodeID); err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to reshard cluster during leader downscale")
+			return result, true, requeueErr
+		}
+		if err := cluster.RemoveRedisNodeByID(ctx, r.K8sClient, cr, sourceMasterNodeID); err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to remove source master node during downscale")
+			return result, true, requeueErr
+		}
+		if err := cluster.RebalanceRedisCluster(ctx, r.K8sClient, cr); err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance cluster after downscale node removal")
+			return result, true, requeueErr
+		}
+
+		logger.Info("completed one overflow leader ordinal cleanup pass",
+			"Ordinal", ordinalToRemove,
+			"Source.Master.NodeID", sourceMasterNodeID,
+			"Transfer.Master.NodeID", transferMasterNodeID,
+			"Removed.Attached.Follower.Count", len(attachedFollowerNodeIDs))
+		result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10, "processed one overflow leader ordinal cleanup")
+		return result, true, requeueErr
 	}
-	// ================================================
-	// 2. leader node setup
-	// ================================================
-	// 1) 처음 생성되는 경우
-	// 2) 리더 노드 수가 변경된 경우
+
+	logger.Info("overflow cluster membership cleanup pass completed; proceeding to statefulset reconcile",
+		"Current.Leader.Replicas", plan.currentLeaderReplicas,
+		"Desired.Leader.Replicas", plan.desiredLeaderReplicas)
+	return ctrl.Result{}, false, nil
+}
+
+func (r *RedisClusterReconciler) reconcileStatefulResources(ctx context.Context, cr *rcvb2.RedisCluster, plan replicaPlan) (ctrl.Result, bool, error) {
+	logger := log.FromContext(ctx)
+	leaderSTSName := k8smeta.GetStatefulSetName(cr.Name, "leader")
+	followerSTSName := k8smeta.GetStatefulSetName(cr.Name, "follower")
+
 	if (cr.Status.ReadyLeaderReplicas == 0 && cr.Status.ReadyFollowerReplicas == 0) ||
-		cr.Status.ReadyLeaderReplicas != desiredLeaderReplicas {
-		recueue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
+		cr.Status.ReadyLeaderReplicas != plan.desiredLeaderReplicas {
+		result, handled, err := r.ensureStatus(ctx, cr, rcvb2.RedisClusterStatus{
 			State:                 rcvb2.RedisClusterInitializing,
 			Reason:                rcvb2.InitializingClusterLeaderReason,
 			ReadyLeaderReplicas:   cr.Status.ReadyLeaderReplicas,
 			ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas,
-		})
-		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to update status")
-		}
-		if recueue {
-			return intctrlutil.Requeue()
+		}, "failed to update status")
+		if err != nil || handled {
+			return result, true, err
 		}
 	}
 
-	if desiredLeaderReplicas > 0 {
-		err = cluster.CreateRedisLeaderService(ctx, cr, r.K8sClient)
-		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to create redis leader service")
+	if plan.desiredLeaderReplicas > 0 {
+		if err := cluster.CreateRedisLeaderService(ctx, cr, r.K8sClient); err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis leader service")
+			return result, true, requeueErr
 		}
 	}
-	if desiredLeaderReplicas < currentLeaderReplicas {
-		firstOrdinalToRemove := desiredLeaderReplicas
-		lastLeaderOrdinal := currentLeaderReplicas - 1
+	if plan.desiredLeaderReplicas < plan.currentLeaderReplicas {
+		firstOrdinalToRemove := plan.desiredLeaderReplicas
+		lastLeaderOrdinal := plan.currentLeaderReplicas - 1
 		downscaleCleanupDone, err := r.isRoleDownscaleClusterCleanupComplete(ctx, cr, firstOrdinalToRemove, lastLeaderOrdinal, "leader", "follower")
 		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to verify downscale cleanup completion before statefulset reconcile")
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to verify downscale cleanup completion before statefulset reconcile")
+			return result, true, requeueErr
 		}
 		if !downscaleCleanupDone {
 			logger.Info("downscale cleanup is not completed yet; delaying StatefulSet replica reconcile",
-				"Current.Leader.Replicas", currentLeaderReplicas,
-				"Current.Follower.Replicas", currentFollowerReplicas,
-				"Desired.Leader.Replicas", desiredLeaderReplicas,
-				"Desired.Follower.Replicas", desiredFollwerReplicas)
-			return intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for downscale cleanup completion before sts reconcile")
+				"Current.Leader.Replicas", plan.currentLeaderReplicas,
+				"Current.Follower.Replicas", plan.currentFollowerReplicas,
+				"Desired.Leader.Replicas", plan.desiredLeaderReplicas,
+				"Desired.Follower.Replicas", plan.desiredFollowerReplicas)
+			result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for downscale cleanup completion before sts reconcile")
+			return result, true, requeueErr
 		}
 	}
-	err = cluster.CreateRedisLeaderSTS(ctx, cr, r.K8sClient)
-	if err != nil {
-		return intctrlutil.RequeueE(ctx, err, "failed to create redis leader")
+	if err := cluster.CreateRedisLeaderSTS(ctx, cr, r.K8sClient); err != nil {
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis leader")
+		return result, true, requeueErr
+	}
+	if !r.IsStatefulSetReady(ctx, cr.Namespace, leaderSTSName) {
+		return ctrl.Result{}, true, nil
 	}
 
-	// err = cluster.ReconcileRedisPodDisruptionBudget(ctx, instance, "leader", instance.Spec.RedisLeader.PodDisruptionBudget, r.K8sClient)
-	// if err != nil {
-	// return intctrlutil.RequeueE(ctx, err, "")
-	// }
+	if (cr.Status.ReadyLeaderReplicas == 0 && cr.Status.ReadyFollowerReplicas == 0) ||
+		cr.Status.ReadyFollowerReplicas != plan.desiredFollowerReplicas {
+		result, handled, err := r.ensureStatus(ctx, cr, rcvb2.RedisClusterStatus{
+			State:                 rcvb2.RedisClusterInitializing,
+			Reason:                rcvb2.InitializingClusterFollowerReason,
+			ReadyLeaderReplicas:   plan.desiredLeaderReplicas,
+			ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas,
+		}, "failed to update status")
+		if err != nil || handled {
+			return result, true, err
+		}
+	}
 
-	// leader 팟들이 모두 준비완료 되었을때 실행해야함. 준비되지 않았을 때 실행하면
-	// replication 명령이 실패하거나
-	// follower가 붙을 master를 못 찾을 수 잇움
-	if r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-leader") {
-		// Leader StatefulSet은 Ready이지만 CR Status는 아직 업데이트되지 않은 상태
-		if (cr.Status.ReadyLeaderReplicas == 0 && cr.Status.ReadyFollowerReplicas == 0) ||
-			cr.Status.ReadyFollowerReplicas != desiredFollwerReplicas {
-			requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
-				State:                 rcvb2.RedisClusterInitializing,
-				Reason:                rcvb2.InitializingClusterFollowerReason,
-				ReadyLeaderReplicas:   desiredLeaderReplicas,           // leader는 준비완료
-				ReadyFollowerReplicas: cr.Status.ReadyFollowerReplicas, // follower는 아직...
-			})
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "")
-			}
-			if requeue {
-				return intctrlutil.Requeue()
-			}
+	if plan.desiredFollowerReplicas != 0 {
+		if err := cluster.CreateRedisFollowerService(ctx, cr, r.K8sClient); err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis follower service")
+			return result, true, requeueErr
 		}
-
-		if desiredFollwerReplicas != 0 {
-			err = cluster.CreateRedisFollowerService(ctx, cr, r.K8sClient)
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to create redis follower service")
-			}
-		}
-		if desiredFollwerReplicas < currentFollowerReplicas {
-			firstOrdinalToRemove := desiredFollwerReplicas
-			lastFollowerOrdinal := currentFollowerReplicas - 1
-			followerDownscaleCleanupDone, err := r.isRoleDownscaleClusterCleanupComplete(ctx, cr, firstOrdinalToRemove, lastFollowerOrdinal, "follower")
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to verify follower downscale cleanup completion before statefulset reconcile")
-			}
-			if !followerDownscaleCleanupDone {
-				logger.Info("follower downscale cleanup is not completed yet; delaying follower StatefulSet replica reconcile",
-					"Current.Follower.Replicas", currentFollowerReplicas,
-					"Desired.Follower.Replicas", desiredFollwerReplicas)
-				return intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for follower downscale cleanup completion before follower sts reconcile")
-			}
-		}
-		err = cluster.CreateRedisFollowerSTS(ctx, cr, r.K8sClient)
+	}
+	if plan.desiredFollowerReplicas < plan.currentFollowerReplicas {
+		firstOrdinalToRemove := plan.desiredFollowerReplicas
+		lastFollowerOrdinal := plan.currentFollowerReplicas - 1
+		followerDownscaleCleanupDone, err := r.isRoleDownscaleClusterCleanupComplete(ctx, cr, firstOrdinalToRemove, lastFollowerOrdinal, "follower")
 		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to create redis follower statefulset")
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to verify follower downscale cleanup completion before statefulset reconcile")
+			return result, true, requeueErr
 		}
-
-		// err = cluster.ReconcileRedisPodDisruptionBudget(ctx, instance, "follower", instance.Spec.RedisFollower.PodDisruptionBudget, r.K8sClient)
-		// if err != nil {
-		// 	return intctrlutil.RequeueE(ctx, err, "")
-		// }
-	}
-
-	// Leader 또는 Follower StatefulSet이 아직 준비되지 않았으면 여기서 종료합니다.
-	if !r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-leader") || !r.IsStatefulSetReady(ctx, cr.Namespace, cr.Name+"-follower") {
-		return intctrlutil.Reconciled()
-	}
-
-	// ================================================
-	// 3. bootstrap
-	// ================================================
-	// statefulset pod들이 준비되었고 cr.status가 업데이트해야 합니다
-	if cr.Status.ReadyLeaderReplicas != desiredLeaderReplicas || cr.Status.ReadyFollowerReplicas != desiredFollwerReplicas {
-		requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
-			State:                 rcvb2.RedisClusterBootstrap,
-			Reason:                rcvb2.BootstrapClusterReason,
-			ReadyLeaderReplicas:   desiredLeaderReplicas,
-			ReadyFollowerReplicas: desiredFollwerReplicas, //팔로워들도 준비 완료 !
-		})
-		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "")
-		}
-		if requeue {
-			return intctrlutil.Requeue()
+		if !followerDownscaleCleanupDone {
+			logger.Info("follower downscale cleanup is not completed yet; delaying follower StatefulSet replica reconcile",
+				"Current.Follower.Replicas", plan.currentFollowerReplicas,
+				"Desired.Follower.Replicas", plan.desiredFollowerReplicas)
+			result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for follower downscale cleanup completion before follower sts reconcile")
+			return result, true, requeueErr
 		}
 	}
+	if err := cluster.CreateRedisFollowerSTS(ctx, cr, r.K8sClient); err != nil {
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis follower statefulset")
+		return result, true, requeueErr
+	}
+	if !r.IsStatefulSetReady(ctx, cr.Namespace, followerSTSName) {
+		return ctrl.Result{}, true, nil
+	}
 
-	// ================================================
-	// 4. 단일 노드일 때 leader-0 노드에 모든 슬롯 할당 (테스트용)
-	// ================================================
-	// 아직 클러스터 안에 포함되지는 않음
-	// if desiredLeaderReplicas == 1 {
-	// 	if slotsAssigned, err := cluster.CheckClusterAllSlotsAssigned(ctx, r.K8sClient, cr); err != nil {
-	// 		return intctrlutil.RequeueE(ctx, err, "failed to get cluster slots")
-	// 	} else {
-	// 		if !slotsAssigned {
-	// 			// cluster reset + cluster addslots 실행
-	// 			logger.Info("Start creating a single-node redis cluster")
-	// 			cluster.AddAllSlotsToSingleNode(ctx, r.K8sClient, cr)
-	// 		}
-	// 	}
-	// }
+	return ctrl.Result{}, false, nil
+}
 
-	// 어드미션 웹훅으로 리더 노드 최소 1개 또는 최소 3개이상으로 강제할거임
-	// ================================================
-	// 5. 클러스터 초기화
-	// ================================================
-	// 목표 leader, follower 수에 맞게 클러스터를 초기화합니다.
-	// step 5는 유저가 redicluster replicas수를 변경하였을 때 또는 처음 초기화될 때 실행됩니다.
-	// noaddr, handshake같은 임시 엔트리를 제외하기 위하여 master, slave 플래그가 있는 노드만 카운트합니다.
+func (r *RedisClusterReconciler) reconcileBootstrapStatus(ctx context.Context, cr *rcvb2.RedisCluster, plan replicaPlan) (ctrl.Result, bool, error) {
+	if cr.Status.ReadyLeaderReplicas == plan.desiredLeaderReplicas &&
+		cr.Status.ReadyFollowerReplicas == plan.desiredFollowerReplicas {
+		return ctrl.Result{}, false, nil
+	}
+
+	return r.ensureStatus(ctx, cr, rcvb2.RedisClusterStatus{
+		State:                 rcvb2.RedisClusterBootstrap,
+		Reason:                rcvb2.BootstrapClusterReason,
+		ReadyLeaderReplicas:   plan.desiredLeaderReplicas,
+		ReadyFollowerReplicas: plan.desiredFollowerReplicas,
+	}, "failed to update bootstrap status")
+}
+
+func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context, cr *rcvb2.RedisCluster, plan replicaPlan) (ctrl.Result, bool, error) {
+	logger := log.FromContext(ctx)
+
 	nodeCount, err := cluster.GetClusterNodeCount(ctx, r.K8sClient, cr)
 	if err != nil {
-		return intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
+		return result, true, requeueErr
 	}
-	if nodeCount != desiredTotalReplicas {
-		logger.Info("Creating redis cluster by executing cluster creation commands")
-		// 실제로 레디스 클러스터내에서 마스터 역할을 하는 개수
-		// healthyLeaderCount와 달리 fail, fail?, disconnected 상태의 노드도 카운트합니다.
-		leaderNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
-		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
-		}
-		joinedLeaderPodCount, err := r.getJoinedRolePodCount(ctx, cr, "leader", desiredLeaderReplicas)
-		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to get joined leader pod count")
-		}
-		needLeaderJoin := joinedLeaderPodCount < desiredLeaderReplicas
-		// TODO: currentLeaderCount > desiredLeaderReplica인경우도 처리해야할까?
-		if leaderNodeCount != desiredLeaderReplicas || needLeaderJoin {
-			logger.Info("Not all leader are part of the cluster...",
-				"Leaders.Count", leaderNodeCount,
-				"Joined.Leader.Pods", joinedLeaderPodCount,
-				"Instance.Size", desiredLeaderReplicas)
-			if leaderNodeCount <= 1 && joinedLeaderPodCount <= 1 {
-				// 클러스터 미형성 상태: leader-0만 자기 자신을 master로 인식 (cluster_known_nodes == 1)
-				// redis-cli --cluster create로 모든 leader를 포함한 새 클러스터를 생성합니다.
-				result, err := cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
-				if err != nil {
-					logger.Error(err, "failed to create redis cluster")
-					return intctrlutil.RequeueE(ctx, err, "failed to create redis cluster")
-				}
-				logger.Info("Redis cluster creation result", "Result", result)
-			} else if needLeaderJoin {
-				stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "leader add")
-				if err != nil || !stable {
-					return result, err
-				}
+	if nodeCount == plan.desiredTotalReplicas {
+		return ctrl.Result{}, false, nil
+	}
 
-				// 클러스터가 이미 형성된 상태에서 스케일 업: 새 leader 노드를 기존 클러스터에 추가합니다.
-				// redis-cli --cluster add-node로 개별 노드를 추가한 후 슬롯을 재배분합니다.
-				if err := cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr, desiredLeaderReplicas); err != nil {
-					return intctrlutil.RequeueE(ctx, err, "failed to add leader node to cluster")
-				}
-				if err := cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
-					return intctrlutil.RequeueE(ctx, err, "failed to rebalance empty masters")
-				}
-			} else {
-				logger.Info("leader master count mismatch without unjoined leader pods; waiting for convergence",
-					"Leaders.Count", leaderNodeCount,
-					"Joined.Leader.Pods", joinedLeaderPodCount,
-					"Instance.Size", desiredLeaderReplicas)
+	logger.Info("Creating redis cluster by executing cluster creation commands")
+	leaderNodeCount, err := cluster.GetClusterMasterNodeCount(ctx, r.K8sClient, cr)
+	if err != nil {
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster master node count")
+		return result, true, requeueErr
+	}
+	joinedLeaderPodCount, err := r.getJoinedRolePodCount(ctx, cr, "leader", plan.desiredLeaderReplicas)
+	if err != nil {
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get joined leader pod count")
+		return result, true, requeueErr
+	}
+	needLeaderJoin := joinedLeaderPodCount < plan.desiredLeaderReplicas
+
+	if leaderNodeCount != plan.desiredLeaderReplicas || needLeaderJoin {
+		logger.Info("Not all leader are part of the cluster...",
+			"Leaders.Count", leaderNodeCount,
+			"Joined.Leader.Pods", joinedLeaderPodCount,
+			"Instance.Size", plan.desiredLeaderReplicas)
+		if leaderNodeCount <= 1 && joinedLeaderPodCount <= 1 {
+			result, err := cluster.CreateRedisCluster(ctx, r.K8sClient, cr)
+			if err != nil {
+				logger.Error(err, "failed to create redis cluster")
+				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to create redis cluster")
+				return requeueResult, true, requeueErr
+			}
+			logger.Info("Redis cluster creation result", "Result", result)
+		} else if needLeaderJoin {
+			stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "leader add")
+			if err != nil || !stable {
+				return result, true, err
+			}
+
+			if err := cluster.AddRedisLeaderNodeToCluster(ctx, r.K8sClient, cr, plan.desiredLeaderReplicas); err != nil {
+				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to add leader node to cluster")
+				return requeueResult, true, requeueErr
+			}
+			if err := cluster.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
+				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance empty masters")
+				return requeueResult, true, requeueErr
 			}
 		} else {
-			stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "follower replication")
-			if err != nil || !stable {
-				return result, err
-			}
-
-			currentFollowerCount, err := cluster.GetClusterFollowerNodeCount(ctx, r.K8sClient, cr)
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "failed to get cluster follower node count")
-			}
-			if desiredFollwerReplicas == 0 {
-				logger.Info("no follower/replicas configured, skipping replication configuration", "Leaders.Count", leaderNodeCount, "Leader.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
-			} else if currentFollowerCount < desiredFollwerReplicas {
-				logger.Info("All leader are part of the cluster, adding follower/replicas", "Leaders.Count", leaderNodeCount, "Instance.Size", desiredLeaderReplicas, "Follower.Replicas", desiredFollwerReplicas)
-				if err := cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr, desiredFollwerReplicas, desiredLeaderReplicas); err != nil {
-					return intctrlutil.RequeueE(ctx, err, "failed to execute replication command")
-				}
-			} else if currentFollowerCount > desiredFollwerReplicas {
-				logger.Info("follower count is higher than desired; waiting for node cleanup", "Current.Follower.Count", currentFollowerCount, "Desired.Follower.Count", desiredFollwerReplicas)
-			} else {
-				logger.Info("leader/follower counts match desired, waiting for total cluster node convergence", "Current.Leader.Count", leaderNodeCount, "Desired.Leader.Count", desiredLeaderReplicas, "Current.Follower.Count", currentFollowerCount, "Desired.Follower.Count", desiredFollwerReplicas)
-			}
-
-			return intctrlutil.RequeueAfter(ctx, time.Second*60,
-				"Redis cluster count is not desired",
-				"Current.Count", nodeCount,
-				"Desired.Count", desiredTotalReplicas,
-				"Current.Leader.Count", leaderNodeCount,
-				"Current.Follower.Count", currentFollowerCount,
-				"Desired.Leader.Count", desiredLeaderReplicas,
-				"Desired.Follower.Count", desiredFollwerReplicas)
+			logger.Info("leader master count mismatch without unjoined leader pods; waiting for convergence",
+				"Leaders.Count", leaderNodeCount,
+				"Joined.Leader.Pods", joinedLeaderPodCount,
+				"Instance.Size", plan.desiredLeaderReplicas)
 		}
+		return ctrl.Result{}, false, nil
 	}
 
-	// leader follower 모두 준비되었으면 클러스터 상태를 확인합니다.
-	// ================================================
-	// 6. 클러스터 상태 확인
-	// ================================================
+	stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "follower replication")
+	if err != nil || !stable {
+		return result, true, err
+	}
+
+	currentFollowerCount, err := cluster.GetClusterFollowerNodeCount(ctx, r.K8sClient, cr)
+	if err != nil {
+		requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster follower node count")
+		return requeueResult, true, requeueErr
+	}
+	if plan.desiredFollowerReplicas == 0 {
+		logger.Info("no follower/replicas configured, skipping replication configuration",
+			"Leaders.Count", leaderNodeCount,
+			"Leader.Size", plan.desiredLeaderReplicas,
+			"Follower.Replicas", plan.desiredFollowerReplicas)
+	} else if currentFollowerCount < plan.desiredFollowerReplicas {
+		logger.Info("All leader are part of the cluster, adding follower/replicas",
+			"Leaders.Count", leaderNodeCount,
+			"Instance.Size", plan.desiredLeaderReplicas,
+			"Follower.Replicas", plan.desiredFollowerReplicas)
+		if err := cluster.ExecuteRedisReplicationCommand(ctx, r.K8sClient, cr, plan.desiredFollowerReplicas, plan.desiredLeaderReplicas); err != nil {
+			requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to execute replication command")
+			return requeueResult, true, requeueErr
+		}
+	} else if currentFollowerCount > plan.desiredFollowerReplicas {
+		logger.Info("follower count is higher than desired; waiting for node cleanup",
+			"Current.Follower.Count", currentFollowerCount,
+			"Desired.Follower.Count", plan.desiredFollowerReplicas)
+	} else {
+		logger.Info("leader/follower counts match desired, waiting for total cluster node convergence",
+			"Current.Leader.Count", leaderNodeCount,
+			"Desired.Leader.Count", plan.desiredLeaderReplicas,
+			"Current.Follower.Count", currentFollowerCount,
+			"Desired.Follower.Count", plan.desiredFollowerReplicas)
+	}
+
+	result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*60,
+		"Redis cluster count is not desired",
+		"Current.Count", nodeCount,
+		"Desired.Count", plan.desiredTotalReplicas,
+		"Current.Leader.Count", leaderNodeCount,
+		"Current.Follower.Count", currentFollowerCount,
+		"Desired.Leader.Count", plan.desiredLeaderReplicas,
+		"Desired.Follower.Count", plan.desiredFollowerReplicas)
+	return result, true, requeueErr
+}
+
+func (r *RedisClusterReconciler) reconcileClusterHealth(ctx context.Context, cr *rcvb2.RedisCluster, plan replicaPlan) (ctrl.Result, bool, error) {
+	logger := log.FromContext(ctx)
+
 	logger.Info("Number of Redis nodes match desired")
 	unhealthyNodeCount, err := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 	if err != nil {
-		return intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
+		return result, true, requeueErr
 	}
 
-	// 비정상 노드가 발견된 경우 (단일 노드 클러스터는 제외)
-	if int(desiredTotalReplicas) > 1 && unhealthyNodeCount > 0 {
-		// 상태를 Failed로 설정하여 문제가 있음을 표시합니다.
-		requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
+	if int(plan.desiredTotalReplicas) > 1 && unhealthyNodeCount > 0 {
+		result, handled, err := r.ensureStatus(ctx, cr, rcvb2.RedisClusterStatus{
 			State:                 rcvb2.RedisClusterFailed,
 			Reason:                "RedisCluster has unhealthy nodes",
-			ReadyLeaderReplicas:   desiredLeaderReplicas,
-			ReadyFollowerReplicas: desiredFollwerReplicas,
-		})
-		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "")
-		}
-		if requeue {
-			return intctrlutil.Requeue()
+			ReadyLeaderReplicas:   plan.desiredLeaderReplicas,
+			ReadyFollowerReplicas: plan.desiredFollowerReplicas,
+		}, "failed to update failed cluster status")
+		if err != nil || handled {
+			return result, true, err
 		}
 
-		// 연결이 끊긴 Master 노드를 복구 시도합니다.
-		// 네트워크 문제나 일시적인 장애로 인해 노드가 클러스터에서 분리되었을 수 있습니다.
 		logger.Info("healthy leader count does not match desired; attempting to repair disconnected masters")
 		if err = cluster.RepairDisconnectedNodes(ctx, r.K8sClient, cr); err != nil {
 			logger.Error(err, "failed to repair disconnected masters")
 		}
 
-		// 복구 작업 후 비정상 노드 수를 다시 확인합니다.
-		// 최대 3회 시도하며, 각 시도 사이에 5초 대기합니다.
 		err = retry.Do(func() error {
 			nc, nErr := cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 			if nErr != nil {
 				return nErr
 			}
 			if nc == 0 {
-				return nil // 성공: 비정상 노드가 없음
+				return nil
 			}
-			return fmt.Errorf("%d unhealthy nodes", nc) // 실패: 아직 비정상 노드가 있음
+			return fmt.Errorf("%d unhealthy nodes", nc)
 		}, retry.Attempts(3), retry.Delay(time.Second*5))
-
-		// 복구가 성공한 경우
 		if err == nil {
 			logger.Info("repairing unhealthy masters successful, no unhealthy masters left")
-			// 30초 후에 다시 확인합니다. 이 시간 동안 클러스터가 안정화됩니다.
-			return intctrlutil.RequeueAfter(ctx, time.Second*30, "no unhealthy nodes found after repairing disconnected masters")
+			result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*30, "no unhealthy nodes found after repairing disconnected masters")
+			return result, true, requeueErr
 		}
 
-		// 복구가 실패한 경우, 비정상 노드 수를 다시 확인합니다.
 		unhealthyNodeCount, err = cluster.UnhealthyNodesInCluster(ctx, r.K8sClient, cr)
 		if err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to determine unhealthy node count in cluster")
+			return result, true, requeueErr
 		}
-
-		// 대부분의 노드가 비정상인 경우 (전체 - 1개 이상)
-		// 클러스터가 심각하게 손상되었으므로 수동 개입이 필요합니다.
-		// "거의 모든 노드가 실패"한 경우를 감지하기 위해서입니다.
-		// 3개 중 2개 실패: 자동 복구가 거의 불가능
-		// 5개 중 4개 실패: 자동 복구가 거의 불가능
-		if int(desiredTotalReplicas) > 1 && int(unhealthyNodeCount) >= int(desiredTotalReplicas)-1 {
-			return intctrlutil.RequeueE(ctx, fmt.Errorf("cluster broken: %d/%d nodes unhealthy, manual intervention required", unhealthyNodeCount, desiredTotalReplicas), "")
+		if int(plan.desiredTotalReplicas) > 1 && int(unhealthyNodeCount) >= int(plan.desiredTotalReplicas)-1 {
+			result, requeueErr := intctrlutil.RequeueE(ctx, fmt.Errorf("cluster broken: %d/%d nodes unhealthy, manual intervention required", unhealthyNodeCount, plan.desiredTotalReplicas), "")
+			return result, true, requeueErr
 		}
 	}
 
-	// ========================================================================
-	// Step 14: Empty Master 노드 확인
-	// ========================================================================
-	// 모든 노드가 클러스터에 포함되었는지 확인한 후, 슬롯이 할당되지 않은 Empty Master 노드가 있는지 확인합니다.
-	// Empty Master는 클러스터에 포함되어 있지만 슬롯이 없는 노드입니다 (스케일 아웃 후 발생할 수 있음).
 	if ncCheck, err := cluster.GetClusterNodeCount(ctx, r.K8sClient, cr); err != nil {
-		return intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
-	} else if ncCheck == desiredTotalReplicas {
-		// Empty Master가 발견되면 자동으로 재밸런싱하여 슬롯을 분배합니다.
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get cluster node count")
+		return result, true, requeueErr
+	} else if ncCheck == plan.desiredTotalReplicas {
 		cluster.RebalanceIfEmptyMasterExists(ctx, r.K8sClient, cr)
 	}
 
-	// ========================================================================
-	// Step 15: 클러스터 Ready 상태 설정
-	// ========================================================================
-	// 모든 Leader와 Follower가 준비되었고, 아직 Ready 상태가 아니면 Ready로 전환합니다.
-	// 이미 Ready 상태인 경우 불필요한 상태 업데이트를 방지하기 위해 건너뜁니다.
-	// Initializing 상태에서는 Bootstrap을 거쳐야 하므로 Ready로 전환하지 않습니다.
-	// fail일때도 기다려야할까?
-	if cr.Status.ReadyLeaderReplicas == desiredLeaderReplicas &&
-		cr.Status.ReadyFollowerReplicas == desiredFollwerReplicas &&
+	if cr.Status.ReadyLeaderReplicas == plan.desiredLeaderReplicas &&
+		cr.Status.ReadyFollowerReplicas == plan.desiredFollowerReplicas &&
 		cr.Status.State != rcvb2.RedisClusterReady &&
-		cr.Status.State != rcvb2.RedisClusterInitializing {
-		// 먼저 클러스터가 비정상 상태라고 가정하고 메트릭을 0으로 설정합니다.
-
-		// 클러스터 상태를 확인합니다 (redis-cli --cluster check 명령 사용).
-		if cluster.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
-
-			// 상태를 Ready로 업데이트합니다.
-			requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
-				State:                 rcvb2.RedisClusterReady,
-				Reason:                rcvb2.ReadyClusterReason,
-				ReadyLeaderReplicas:   desiredLeaderReplicas,
-				ReadyFollowerReplicas: desiredFollwerReplicas,
-			})
-			if err != nil {
-				return intctrlutil.RequeueE(ctx, err, "")
-			}
-			if requeue {
-				return intctrlutil.Requeue()
-			}
-		}
+		cr.Status.State != rcvb2.RedisClusterInitializing &&
+		cluster.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
+		return r.ensureStatus(ctx, cr, rcvb2.RedisClusterStatus{
+			State:                 rcvb2.RedisClusterReady,
+			Reason:                rcvb2.ReadyClusterReason,
+			ReadyLeaderReplicas:   plan.desiredLeaderReplicas,
+			ReadyFollowerReplicas: plan.desiredFollowerReplicas,
+		}, "failed to update ready cluster status")
 	}
 
-	// ========================================================================
-	// Step 16: Pod 라벨 동기화
-	// ========================================================================
-	// Pod의 실제 역할(leader/follower)을 Kubernetes 라벨로 동기화합니다.
-	// 이렇게 하면 Service Selector가 올바르게 작동하여 각 역할의 Pod를 정확히 선택할 수 있습니다.
-	if err := cluster.UpdateRedisRoleLabels(ctx, r.K8sClient, cr); err != nil {
-		return intctrlutil.RequeueE(ctx, err, "failed to update redis role labels")
-	}
+	return ctrl.Result{}, false, nil
+}
 
-	// 정상 상태에서도 주기적으로 reconcile하여 클러스터 상태를 모니터링합니다.
-	return intctrlutil.RequeueAfter(ctx, time.Second*10, "")
+func (r *RedisClusterReconciler) ensureStatus(ctx context.Context, cr *rcvb2.RedisCluster, status rcvb2.RedisClusterStatus, failureMessage string) (ctrl.Result, bool, error) {
+	requeue, err := r.updateStatus(ctx, cr, status)
+	if err != nil {
+		result, requeueErr := intctrlutil.RequeueE(ctx, err, failureMessage)
+		return result, true, requeueErr
+	}
+	if requeue {
+		result, requeueErr := intctrlutil.Requeue()
+		return result, true, requeueErr
+	}
+	return ctrl.Result{}, false, nil
 }
 
 func (r *RedisClusterReconciler) pickTransferMasterNodeID(ctx context.Context, cr *rcvb2.RedisCluster, sourceMasterNodeID string, desiredLeaderReplicas, ordinalToRemove int32) (string, bool, error) {
