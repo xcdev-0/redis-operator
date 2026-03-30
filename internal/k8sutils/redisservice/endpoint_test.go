@@ -48,14 +48,6 @@ func TestEndpointInfo_String(t *testing.T) {
 			},
 			expected: ":",
 		},
-		{
-			name: "NodePort 형식",
-			endpoint: &EndpointInfo{
-				IP:   "192.168.1.100",
-				Port: "30001",
-			},
-			expected: "192.168.1.100:30001",
-		},
 	}
 
 	for _, tt := range tests {
@@ -90,7 +82,7 @@ func TestGetEndpoint_ErrorHandling(t *testing.T) {
 		},
 		{
 			name:        "Service 타입별 동작",
-			description: "ClusterIP와 NodePort 타입에 따른 다른 동작",
+			description: "서비스 타입과 무관하게 Pod 네트워크 엔드포인트를 사용",
 		},
 	}
 
@@ -119,12 +111,8 @@ func TestGetEndPointIP_ErrorHandling(t *testing.T) {
 			description: "GetEndPointIP는 포트 없이 IP만 반환해야 함",
 		},
 		{
-			name:        "NodePort 타입에서 Node IP 반환",
-			description: "NodePort 타입일 때는 Pod IP가 아닌 Node IP를 반환",
-		},
-		{
 			name:        "ClusterIP 타입에서 Pod IP 반환",
-			description: "ClusterIP 타입일 때는 Pod IP를 반환",
+			description: "Pod 네트워크 기반으로 Pod IP를 반환",
 		},
 	}
 

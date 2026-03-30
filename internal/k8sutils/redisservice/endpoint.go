@@ -9,8 +9,6 @@ import (
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/envs"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -83,40 +81,7 @@ func (rd *RedisDetails) FQDN() *string {
 }
 
 func GetEndPoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
-	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-		return getNodePortEndpoint(ctx, client, cr, rd)
-	}
 	return getPodNetworkEndpoint(ctx, client, cr, rd)
-}
-
-func getNodePortEndpoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {
-	svcName := k8smeta.GetNodePortServiceNameFromPodName(rd.PodName)
-	svc, err := getService(ctx, client, cr.Namespace, svcName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get NodePort service %s: %w", svcName, err)
-	}
-	if svc.Spec.Type != corev1.ServiceTypeNodePort {
-		return nil, fmt.Errorf("service %s is not NodePort type", svcName)
-	}
-
-	svcPort := getServicePortByName(svc, consts.RedisClientPortName)
-	if svcPort == nil || svcPort.NodePort == 0 {
-		return nil, fmt.Errorf("redis client NodePort is not set for service %s", svcName)
-	}
-
-	pod, err := client.CoreV1().Pods(rd.Namespace).Get(ctx, rd.PodName, metav1.GetOptions{})
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Error in getting Redis pod host IP", "namespace", rd.Namespace, "podName", rd.PodName)
-		return nil, err
-	}
-	if pod.Status.HostIP == "" {
-		return nil, fmt.Errorf("pod %s host IP is empty", rd.PodName)
-	}
-
-	return &EndpointInfo{
-		IP:   formatIP(pod.Status.HostIP),
-		Port: strconv.Itoa(int(svcPort.NodePort)),
-	}, nil
 }
 
 func getPodNetworkEndpoint(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster, rd RedisDetails) (*EndpointInfo, error) {

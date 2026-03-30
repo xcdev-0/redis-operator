@@ -69,33 +69,6 @@ func NewTLSVolumeConfig(tlsConfig *TLSConfig) *VolumeConfig {
 	}
 }
 
-// NewACLVolumeConfig는 ACL 설정용 Volume과 VolumeMount를 생성합니다.
-// ACL은 Secret 또는 PVC로 제공될 수 있습니다.
-func NewACLVolumeConfig(aclConfig *ACLConfig) *VolumeConfig {
-	if aclConfig == nil {
-		return nil
-	}
-
-	volumeName := aclConfig.GetVolumeName()
-	volumeSource := aclConfig.GetVolumeSource()
-
-	if volumeName == "" || volumeSource == nil {
-		return nil
-	}
-
-	return &VolumeConfig{
-		Volume: corev1.Volume{
-			Name:         volumeName,
-			VolumeSource: *volumeSource,
-		},
-		VolumeMount: corev1.VolumeMount{
-			Name:      volumeName,
-			MountPath: "/etc/redis/user.acl",
-			SubPath:   "user.acl",
-		},
-	}
-}
-
 // NewNodeConfVolumeMount는 클러스터 노드 설정용 VolumeMount를 생성합니다.
 // (PVC로 생성되므로 Volume은 VolumeClaimTemplate에서 처리)
 func NewNodeConfVolumeMount() corev1.VolumeMount {

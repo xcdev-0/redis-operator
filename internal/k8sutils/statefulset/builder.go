@@ -28,16 +28,15 @@ type StatefulSetParameters struct {
 	NodeConfPVC       corev1.PersistentVolumeClaim // 노드 설정 저장용 PVC 템플릿 (클러스터 모드)
 	AdditionalVolumes []corev1.Volume              // 추가 볼륨
 
-	ImagePullSecrets                     *[]corev1.LocalObjectReference                          // 이미지 풀 시크릿 (프라이빗 레지스트리용)
-	ServiceAccountName                   *string                                                 // Pod에 사용할 ServiceAccount 이름
-	UpdateStrategy                       appsv1.StatefulSetUpdateStrategy                        // StatefulSet 업데이트 전략
-	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy // PVC 보존 정책
-	RecreateStatefulSet                  bool                                                    // 변경 불가능한 필드 변경 시 StatefulSet 재생성 여부
-	RecreateStatefulsetStrategy          *metav1.DeletionPropagation                             // StatefulSet 재생성 시 삭제 전파 전략
-	TerminationGracePeriodSeconds        *int64                                                  // Pod 종료 유예 기간 (초)
-	IgnoreAnnotations                    []string                                                // 패치 비교 시 무시할 어노테이션 목록
-	HostNetwork                          bool                                                    // 호스트 네트워크 사용 여부
-	MinReadySeconds                      int32                                                   // Pod가 준비된 것으로 간주되기 전 최소 대기 시간 (초)
+	ImagePullSecrets              *[]corev1.LocalObjectReference // 이미지 풀 시크릿 (프라이빗 레지스트리용)
+	ServiceAccountName            *string                        // Pod에 사용할 ServiceAccount 이름
+	UpdateStrategy                appsv1.StatefulSetUpdateStrategy
+	RecreateStatefulSet           bool
+	RecreateStatefulsetStrategy   *metav1.DeletionPropagation
+	TerminationGracePeriodSeconds *int64
+	IgnoreAnnotations             []string
+	HostNetwork                   bool
+	MinReadySeconds               int32
 }
 
 // ContainerParameters는 Redis 컨테이너 생성에 필요한 모든 파라미터를 담는 구조체입니다.
@@ -68,9 +67,8 @@ type ContainerParameters struct {
 	DataPersistenceEnabled bool // 데이터 영속성 활성화 여부
 	NodePersistenceEnabled bool // 노드 설정 영속성 활성화 여부
 
-	// tls & acl
+	// tls
 	TLSConfig *TLSConfig // TLS 설정
-	ACLConfig *ACLConfig // ACL (Access Control List) 설정
 
 	// health check
 	ReadinessProbe *corev1.Probe // Readiness Probe 설정
@@ -105,12 +103,11 @@ func generateStatefulSetDef(
 		TypeMeta:   k8smeta.GenerateTypeMeta("StatefulSet", "apps/v1"),
 		ObjectMeta: objectMeta,
 		Spec: appsv1.StatefulSetSpec{
-			Selector:                             selectorLabels,
-			ServiceName:                          fmt.Sprintf("%s-headless", objectMeta.Name),
-			Replicas:                             stsParams.Replicas,
-			UpdateStrategy:                       stsParams.UpdateStrategy,
-			PersistentVolumeClaimRetentionPolicy: stsParams.PersistentVolumeClaimRetentionPolicy,
-			MinReadySeconds:                      stsParams.MinReadySeconds,
+			Selector:        selectorLabels,
+			ServiceName:     fmt.Sprintf("%s-headless", objectMeta.Name),
+			Replicas:        stsParams.Replicas,
+			UpdateStrategy:  stsParams.UpdateStrategy,
+			MinReadySeconds: stsParams.MinReadySeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      objectMeta.GetLabels(), // sts label == pod label
@@ -158,13 +155,6 @@ func generateStatefulSetDef(
 		statefulset.Spec.Template.Spec.Volumes = append(
 			statefulset.Spec.Template.Spec.Volumes,
 			tlsConfig.Volume)
-	}
-
-	// ACL 설정 볼륨 추가 (Secret 또는 PVC)
-	if aclConfig := NewACLVolumeConfig(containerParams.ACLConfig); aclConfig != nil {
-		statefulset.Spec.Template.Spec.Volumes = append(
-			statefulset.Spec.Template.Spec.Volumes,
-			aclConfig.Volume)
 	}
 
 	// 노드 설정 저장용 PVC 템플릿 설정

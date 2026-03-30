@@ -2,6 +2,7 @@ package statefulset
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
@@ -49,6 +50,38 @@ func TestGenerateMainContainerDef_KeepsDefaultAndCustomEnvVars(t *testing.T) {
 
 	if count := envCount(containers[0].Env, "CUSTOM_MAIN"); count != 1 {
 		t.Fatalf("expected CUSTOM_MAIN once, got %d", count)
+	}
+}
+
+func TestGenerateAuthAndTLSArgs_UsesConfiguredTLSVariableNames(t *testing.T) {
+	_, tlsArgs := GenerateAuthAndTLSArgs(true, true)
+
+	if !strings.Contains(tlsArgs, "${REDIS_TLS_KEY}") {
+		t.Fatalf("expected tls args to use REDIS_TLS_KEY, got %q", tlsArgs)
+	}
+	if !strings.Contains(tlsArgs, "${REDIS_TLS_CA_CERT}") {
+		t.Fatalf("expected tls args to use REDIS_TLS_CA_CERT, got %q", tlsArgs)
+	}
+	if strings.Contains(tlsArgs, "REDIS_TLS_CERT_KEY") || strings.Contains(tlsArgs, "REDIS_TLS_CA_KEY") {
+		t.Fatalf("expected legacy TLS variable names to be absent, got %q", tlsArgs)
+	}
+}
+
+func TestGetProbeInfo_UsesConfiguredTLSVariableNames(t *testing.T) {
+	probe := getProbeInfo(nil, true, true)
+	if probe == nil || probe.Exec == nil || len(probe.Exec.Command) < 3 {
+		t.Fatalf("expected exec probe command to be generated")
+	}
+
+	cmd := probe.Exec.Command[2]
+	if !strings.Contains(cmd, "${REDIS_TLS_KEY}") {
+		t.Fatalf("expected probe command to use REDIS_TLS_KEY, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "${REDIS_TLS_CA_CERT}") {
+		t.Fatalf("expected probe command to use REDIS_TLS_CA_CERT, got %q", cmd)
+	}
+	if strings.Contains(cmd, "REDIS_TLS_CERT_KEY") || strings.Contains(cmd, "REDIS_TLS_CA_KEY") {
+		t.Fatalf("expected legacy TLS variable names to be absent, got %q", cmd)
 	}
 }
 

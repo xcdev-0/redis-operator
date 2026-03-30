@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/Showmax/go-fqdn"
 	agentutil "github.com/xcdev-0/redis-operator/internal/agent/util"
@@ -34,17 +33,14 @@ func GenerateConfig() error {
 		nodeConfDir        = util.CoalesceEnv1("NODE_CONF_DIR", "/node-conf")            // 클러스터 nodes.conf 파일 위치
 		redisMajorVersion  = util.CoalesceEnv1(consts.REDIS_MAJOR_VERSION, "v7")         // Redis 메이저 버전 (v6 또는 v7)
 		redisPort          = util.CoalesceEnv1(consts.REDIS_PORT, "6379")                // Redis 포트 번호
-		nodeport           = util.CoalesceEnv1("NODEPORT", "false")                      // NodePort 모드 사용 여부 (Kubernetes Service 타입)
 		tlsMode            = util.CoalesceEnv1(consts.TLS_MODE, "false")                 // TLS 암호화 활성화 여부
 	)
 
 	applyAuth(cfg)
-	applyCluster(cfg, nodeport, nodeConfDir, redisMajorVersion)
-	applyTLS(cfg, tlsMode, redisMajorVersion, nodeport)
-	applyACL(cfg)
+	applyCluster(cfg, nodeConfDir, redisMajorVersion)
+	applyTLS(cfg, tlsMode, redisMajorVersion)
 	applyPersistence(cfg, persistenceEnabled, dataDir)
 	applyPort(cfg, tlsMode, redisPort)
-	applyNodePort(cfg, nodeport, tlsMode)
 	applyMemory(cfg)
 	applyExternalConfig(cfg, "/etc/redis/external.conf.d")
 
@@ -63,23 +59,16 @@ func applyAuth(cfg *agentutil.Config) {
 }
 
 func applyCluster(cfg *agentutil.Config,
-	nodePortEnabled string,
 	nodeConfDir string,
 	redisMajorVersion string) {
 
 	// 클러스터 노드 간 통신을 위한 IP 주소 설정
 	var clusterAnnounceIP string
-	if nodePortEnabled == "true" {
-		// NodePort 모드: 노드의 실제 IP 주소 사용
-		clusterAnnounceIP = strings.TrimSpace(os.Getenv("HOST_IP"))
+	localIP, localIPErr := util.GetLocalIP()
+	if localIPErr != nil {
+		log.Printf("Warning: Failed to get local IP: %v", localIPErr)
 	} else {
-		// 일반 모드: Pod의 로컬 IP 주소 사용
-		localIP, localIPErr := util.GetLocalIP()
-		if localIPErr != nil {
-			log.Printf("Warning: Failed to get local IP: %v", localIPErr)
-		} else {
-			clusterAnnounceIP = strings.TrimSpace(localIP)
-		}
+		clusterAnnounceIP = localIP
 	}
 	if clusterAnnounceIP != "" {
 		cfg.Append("cluster-announce-ip", clusterAnnounceIP)
@@ -109,7 +98,7 @@ func applyCluster(cfg *agentutil.Config,
 // applyTLS는 TLS 암호화 설정을 적용합니다.
 // TLS를 활성화하면 클라이언트와 Redis 서버 간 통신이 암호화됩니다.
 // 프로덕션 환경에서는 보안을 위해 TLS를 사용하는 것이 강력히 권장됩니다!
-func applyTLS(cfg *agentutil.Config, tlsMode, redisMajorVersion, nodeport string) {
+func applyTLS(cfg *agentutil.Config, tlsMode, redisMajorVersion string) {
 	if tlsMode != "true" {
 		fmt.Println("Running without TLS mode")
 		return
@@ -123,20 +112,9 @@ func applyTLS(cfg *agentutil.Config, tlsMode, redisMajorVersion, nodeport string
 	cfg.Append("tls-replication", "yes")                                            // Master-Replica 복제 시 TLS 사용
 	cfg.Append("tls-cluster", "yes")                                                // 클러스터 노드 간 통신 시 TLS 사용
 
-	// Redis v7 + 일반 모드: 호스트명을 우선 사용 (IP 변경에 더 안정적)
-	if redisMajorVersion == "v7" && nodeport == "false" {
+	// Redis v7에서는 호스트명을 우선 사용합니다.
+	if redisMajorVersion == "v7" {
 		cfg.Append("cluster-preferred-endpoint-type", "hostname")
-	}
-}
-
-// applyACL는 ACL (Access Control List) 설정을 적용합니다.
-// ACL을 사용하면 사용자별로 접근 권한을 세밀하게 제어할 수 있습니다.
-// 예: 특정 키에만 읽기 권한, 특정 명령어만 실행 가능 등
-func applyACL(cfg *agentutil.Config) {
-	if aclMode := util.CoalesceEnv1(consts.ACL_MODE, ""); aclMode == "true" {
-		cfg.Append("aclfile", "/etc/redis/user.acl") // ACL 규칙이 저장된 파일 경로
-	} else {
-		fmt.Println("ACL_MODE is not true, skipping ACL file modification")
 	}
 }
 
@@ -169,37 +147,6 @@ func applyPort(cfg *agentutil.Config, tlsMode, redisPort string) {
 		cfg.Append("tls-port", redisPort) // TLS 포트 사용
 	} else {
 		cfg.Append("port", redisPort) // 일반 포트 사용
-	}
-}
-
-// applyNodePort는 NodePort 모드 설정을 적용합니다.
-// NodePort 모드를 사용하면 각 Pod마다 다른 포트가 할당됩니다.
-// Pod의 호스트명을 기반으로 환경 변수 이름을 만들어서 해당 Pod의 포트를 가져옵니다.
-// 예: Pod 이름이 "redis-cluster-leader-0"이면
-//
-//	환경 변수: "announce_port_redis_cluster_leader_0"
-func applyNodePort(cfg *agentutil.Config, nodeport, tlsMode string) {
-	if nodeport != "true" {
-		return
-	}
-
-	podHostname, _ := os.Hostname() // Pod 호스트명 가져오기 (예: "redis-cluster-leader-0")
-
-	announcePortVar := "announce_port_" + strings.ReplaceAll(podHostname, "-", "_")
-	announceBusPortVar := "announce_bus_port_" + strings.ReplaceAll(podHostname, "-", "_")
-
-	// 환경 변수에서 해당 Pod의 포트 정보 가져오기
-	clusterAnnouncePort := os.Getenv(announcePortVar)       // 클라이언트 통신 포트
-	clusterAnnounceBusPort := os.Getenv(announceBusPortVar) // 클러스터 버스 포트 (노드 간 통신용)
-
-	if clusterAnnouncePort != "" {
-		cfg.Append("cluster-announce-port", clusterAnnouncePort) // 클라이언트 통신 포트
-		if tlsMode == "true" {
-			cfg.Append("cluster-announce-tls-port", clusterAnnouncePort) // TLS 포트
-		}
-	}
-	if clusterAnnounceBusPort != "" {
-		cfg.Append("cluster-announce-bus-port", clusterAnnounceBusPort) // 클러스터 버스 포트
 	}
 }
 

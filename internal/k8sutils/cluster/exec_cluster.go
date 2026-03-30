@@ -546,8 +546,7 @@ func RemoveRedisFollowerNodesFromCluster(ctx context.Context, k8sclient kubernet
 	}
 	attachedFollowerNodeIDs := getAttachedFollowerNodeIDs(ctx, redisClient, targetLeaderNodeID)
 
-	// nodeport: host:port
-	// clusterip: ip:port or fqdn:port
+	// service endpoint: ip:port or fqdn:port
 	endpoint, err := redisservice.GetEndPoint(ctx, k8sclient, cr, clusterExistingPod)
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint for cluster existing pod %s: %w", clusterExistingPod.PodName, err)

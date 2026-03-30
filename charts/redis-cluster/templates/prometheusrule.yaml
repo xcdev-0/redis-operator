@@ -1,0 +1,70 @@
+{{- if and .Values.redisCluster.enabled .Values.prometheusRule.enabled }}
+{{- $redisNamespace := include "redis-cluster.namespace" . -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "redis-cluster.resourceName" . }}-alerts
+  namespace: {{ default $redisNamespace .Values.prometheusRule.namespace }}
+  labels:
+    {{- include "redis-cluster.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.prometheusRule.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: {{ include "redis-cluster.resourceName" . }}.health
+      rules:
+        - alert: RedisInstanceDown
+          expr: redis_up{namespace="{{ $redisNamespace }}"} == 0
+          for: {{ .Values.prometheusRule.for.redisDown }}
+          labels:
+            severity: critical
+            monitoring_target: redis
+          annotations:
+            summary: Redis instance is down
+            description: redis_up metric is 0 for the configured duration.
+
+        - alert: RedisClusterStateFail
+          expr: redis_cluster_state{namespace="{{ $redisNamespace }}"} == 0
+          for: {{ .Values.prometheusRule.for.clusterStateFail }}
+          labels:
+            severity: critical
+            monitoring_target: redis
+          annotations:
+            summary: Redis cluster state is failing
+            description: redis_cluster_state is 0 for the configured duration.
+
+        - alert: RedisMemoryUsageHigh
+          expr: (redis_memory_max_bytes{namespace="{{ $redisNamespace }}"} > 0) and (((redis_memory_used_bytes{namespace="{{ $redisNamespace }}"} / redis_memory_max_bytes{namespace="{{ $redisNamespace }}"}) * 100) > {{ .Values.prometheusRule.thresholds.memoryUsagePercent }})
+          for: {{ .Values.prometheusRule.for.memoryUsageHigh }}
+          labels:
+            severity: warning
+            monitoring_target: redis
+          annotations:
+            summary: Redis memory usage is high
+            description: Redis memory usage exceeded the configured percentage threshold.
+
+        - alert: RedisRejectedConnectionsHigh
+          expr: increase(redis_rejected_connections_total{namespace="{{ $redisNamespace }}"}[5m]) > {{ .Values.prometheusRule.thresholds.rejectedConnectionsIncrease }}
+          for: {{ .Values.prometheusRule.for.rejectedConnectionsHigh }}
+          labels:
+            severity: warning
+            monitoring_target: redis
+          annotations:
+            summary: Redis rejected connections detected
+            description: Rejected connection count increased within the last 5 minutes.
+
+        - alert: RedisEvictedKeysHigh
+          expr: increase(redis_evicted_keys_total{namespace="{{ $redisNamespace }}"}[10m]) > {{ .Values.prometheusRule.thresholds.evictedKeysIncrease }}
+          for: {{ .Values.prometheusRule.for.evictedKeysHigh }}
+          labels:
+            severity: warning
+            monitoring_target: redis
+          annotations:
+            summary: Redis key evictions detected
+            description: Evicted keys increased within the last 10 minutes.
+{{- end }}

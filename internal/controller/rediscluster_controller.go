@@ -37,9 +37,7 @@ import (
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	redisclusterv1beta2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/cluster"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -51,19 +49,15 @@ type RedisClusterReconciler struct {
 	Recorder  record.EventRecorder
 }
 
-const (
-	RedisClusterFinalizer = "ejlabs.in/finalizer"
-)
-
 // +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=ejlabs.in,resources=redisclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -75,9 +69,6 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if cr.GetDeletionTimestamp() != nil {
-		if err := HandleRedisClusterFinalizer(ctx, r.Client, cr, RedisClusterFinalizer); err != nil {
-			return intctrlutil.RequeueE(ctx, err, "failed to handle redis cluster finalizer")
-		}
 		return intctrlutil.Reconciled()
 	}
 
@@ -86,10 +77,6 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	cr.SetDefault()
-
-	if err = addFinalizer(ctx, cr, RedisClusterFinalizer, r.Client); err != nil {
-		return intctrlutil.RequeueE(ctx, err, "failed to add finalizer")
-	}
 
 	// replica count
 	desiredLeaderReplicas := cr.Spec.GetReplicaCount("leader")
@@ -679,34 +666,6 @@ func (r *RedisClusterReconciler) isRoleDownscaleClusterCleanupComplete(ctx conte
 		}
 	}
 	return true, nil
-}
-
-// deleteOrphanedPVCs deletes PVCs left behind after downscale for the given ordinal.
-// Both leader and follower PVCs (node-conf, data-persistence) are deleted.
-// NotFound errors are ignored (already deleted). Other errors are returned but non-fatal.
-func (r *RedisClusterReconciler) deleteOrphanedPVCs(ctx context.Context, cr *rcvb2.RedisCluster, ordinal int) error {
-	logger := log.FromContext(ctx)
-	roles := []string{"leader", "follower"}
-	volumeNames := []string{consts.VolumeNameNodeConf, consts.VolumeNameData}
-
-	for _, role := range roles {
-		podName := k8smeta.GetPodName(cr.Name, role, ordinal)
-		for _, volName := range volumeNames {
-			pvcName := fmt.Sprintf("%s-%s", volName, podName)
-			pvc := &corev1.PersistentVolumeClaim{}
-			pvc.Name = pvcName
-			pvc.Namespace = cr.Namespace
-			if err := r.Client.Delete(ctx, pvc); err != nil {
-				if apierrors.IsNotFound(err) {
-					continue
-				}
-				logger.Error(err, "failed to delete PVC", "pvc", pvcName)
-				return err
-			}
-			logger.Info("deleted orphaned PVC", "pvc", pvcName)
-		}
-	}
-	return nil
 }
 
 func (r *RedisClusterReconciler) updateStatus(ctx context.Context, rc *rcvb2.RedisCluster, status rcvb2.RedisClusterStatus) (requeue bool, err error) {

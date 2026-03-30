@@ -21,6 +21,8 @@ const (
 	LabelKeyApp     = "sts-name"
 	LabelKeyRole    = "role"
 	LabelKeyCluster = "cluster"
+	// LabelKeyMetricsScrape marks Services intended for exporter scraping.
+	LabelKeyMetricsScrape = "redis.ej.com/metrics-scrape"
 )
 
 const (
@@ -33,6 +35,4 @@ const (
 	VolumeNameNodeConf              = "node-conf"
 	VolumeNameData                  = "data-persistence" // 데이터 영속성 볼륨 이름
 	VolumeNameTLSCerts              = "tls-certs"
-	VolumeNameACLSecret             = "acl-secret"
-	VolumeNameACLPVC                = "acl-pvc"
 )

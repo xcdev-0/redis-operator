@@ -8,11 +8,21 @@ rules:
   - ""
   resources:
   - configmaps
-  - persistentvolumeclaims
+  - secrets
   - services
   verbs:
   - create
   - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
   - get
   - list
   - patch
@@ -64,12 +74,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - ejlabs.in
-  resources:
-  - redisclusters/finalizers
-  verbs:
-  - update
 - apiGroups:
   - ejlabs.in
   resources:

@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
@@ -13,8 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 사용됩니다.
@@ -62,10 +59,6 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSTS(ctx c
 		return err
 	}
 
-	if cr.Spec.KubernetesConfig.GetServiceType() == "NodePort" {
-		applyNodePortEnvConfig(ctx, cl, &containerParams, cr, redisClusterRoleParams)
-	}
-
 	err = statefulset.CreateOrUpdateStateFul(
 		ctx,
 		cl,
@@ -111,9 +104,8 @@ func generateStatefulSetParams(
 		HostNetwork:                   cr.Spec.HostNetwork,                      // Pod 호스트 네트워크
 
 		// StatefulSet 설정
-		UpdateStrategy:                       cr.Spec.KubernetesConfig.UpdateStrategy,                       // 업데이트 전략
-		PersistentVolumeClaimRetentionPolicy: cr.Spec.KubernetesConfig.PersistentVolumeClaimRetentionPolicy, // PVC 보존 정책
-		IgnoreAnnotations:                    cr.Spec.KubernetesConfig.IgnoreAnnotations,                    // 무시할 어노테이션
+		UpdateStrategy:    cr.Spec.KubernetesConfig.UpdateStrategy,    // 업데이트 전략
+		IgnoreAnnotations: cr.Spec.KubernetesConfig.IgnoreAnnotations, // 무시할 어노테이션
 	}
 	// Redis Exporter 메트릭 활성화 여부
 	if cr.Spec.RedisExporter != nil {
@@ -197,7 +189,7 @@ func generateRedisClusterContainerParams(
 	}
 	applyStorageConfig(&params, cr.Spec.Storage)
 	applyMonitoringConfig(&params, cr.Spec.RedisExporter)
-	applySecurityConfig(&params, cr.Spec.TLS, cr.Spec.ACL)
+	applySecurityConfig(&params, cr.Spec.TLS)
 
 	if err := applyAuthConfig(&params, cr); err != nil {
 		return params, err
@@ -247,8 +239,8 @@ func applyMonitoringConfig(params *statefulset.ContainerParameters, exporter *rc
 	params.RedisExporterPort = exporter.Port
 }
 
-// applySecurityConfig는 TLS 및 ACL 보안 설정을 적용합니다.
-func applySecurityConfig(params *statefulset.ContainerParameters, tls *rcvb2.TLSConfig, acl *rcvb2.ACLConfig) {
+// applySecurityConfig는 TLS 보안 설정을 적용합니다.
+func applySecurityConfig(params *statefulset.ContainerParameters, tls *rcvb2.TLSConfig) {
 	if tls != nil {
 		params.TLSConfig = &statefulset.TLSConfig{
 			CaKeyFile:   tls.CaKeyFile,
@@ -257,92 +249,4 @@ func applySecurityConfig(params *statefulset.ContainerParameters, tls *rcvb2.TLS
 			Secret:      tls.Secret,
 		}
 	}
-
-	if acl != nil {
-		params.ACLConfig = &statefulset.ACLConfig{
-			Secret:                    acl.Secret,
-			PersistentVolumeClaimName: acl.PersistentVolumeClaimName,
-		}
-	}
-}
-
-func applyNodePortEnvConfig(
-	ctx context.Context,
-	cl kubernetes.Interface,
-	params *statefulset.ContainerParameters, // 포인터로 전달: 구조체 필드를 수정하면 원본에 영향
-	cr *rcvb2.RedisCluster,
-	roleParams RedisClusterRoleParams,
-) {
-	// params.EnvVars는 *[]EnvVar 타입이므로 역참조해서 일반 슬라이스로 변환
-	envVars := ptr.Deref(params.EnvVars, []corev1.EnvVar{})
-	nodePortEnvVars := generateNodePortEnvVars(
-		ctx, cl, cr.Namespace, cr.Name,
-		roleParams.Role, roleParams.ReplicaCounts,
-	)
-	params.EnvVars = ptr.To(append(envVars, nodePortEnvVars...))
-}
-
-// generateNodePortEnvVars는 NodePort 모드에서 각 Pod의 포트 정보를 환경 변수로 생성합니다.
-func generateNodePortEnvVars(
-	ctx context.Context,
-	cl kubernetes.Interface,
-	namespace string,
-	clusterName string,
-	role string,
-	replicaCount int32,
-) []corev1.EnvVar {
-	envVars := []corev1.EnvVar{
-		// NodePort 모드 활성화 플래그
-		{Name: "NODEPORT", Value: "true"},
-		// 호스트 IP 환경 변수 (Pod가 실행 중인 노드의 IP)
-		{
-			Name: "HOST_IP",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: "status.hostIP",
-				},
-			},
-		},
-	}
-
-	// 각 Pod의 Service를 조회하여 NodePort 정보 수집
-	for i := 0; i < int(replicaCount); i++ {
-		svcName := k8smeta.GetNodePortServiceName(clusterName, role, i)
-		svc, err := getService(ctx, cl, namespace, svcName)
-		if err != nil {
-			log.FromContext(ctx).Error(err, "Cannot get service for redis pod",
-				"name", svcName, "namespace", namespace)
-			continue
-		}
-
-		// 이름으로 포트 찾기 (인덱스 의존 제거)
-		clientPort := getServicePortByName(svc, consts.RedisClientPortName)
-		busPort := getServicePortByName(svc, consts.RedisBusPortName)
-
-		if clientPort == nil {
-			log.FromContext(ctx).Error(nil, "Redis client port not found in service",
-				"service", svcName, "expectedPort", consts.RedisClientPortName)
-			continue
-		}
-		if busPort == nil {
-			log.FromContext(ctx).Error(nil, "Redis bus port not found in service",
-				"service", svcName, "expectedPort", consts.RedisBusPortName)
-			continue
-		}
-
-		// Service 이름을 환경 변수 키로 사용 (하이픈을 언더스코어로 변경)
-		envVarPrefix := strings.ReplaceAll(svc.Name, "-", "_")
-		envVars = append(envVars,
-			corev1.EnvVar{
-				Name:  "announce_port_" + envVarPrefix,
-				Value: strconv.Itoa(int(clientPort.NodePort)),
-			},
-			corev1.EnvVar{
-				Name:  "announce_bus_port_" + envVarPrefix,
-				Value: strconv.Itoa(int(busPort.NodePort)),
-			},
-		)
-	}
-
-	return envVars
 }

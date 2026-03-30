@@ -48,16 +48,16 @@
 ## 4. Security
 
 ### 4.1 Password Authentication
-- [ ] Create cluster with `kubernetesConfig.existingPasswordSecret`
-- [ ] Verify redis-cli commands include `-a <password>`
-- [ ] Verify exporter connects with password
-- [ ] Verify health probes use password
+- [x] Create cluster with `kubernetesConfig.existingPasswordSecret`
+- [x] Verify redis-cli commands include `-a <password>`
+- [x] Verify exporter connects with password
+- [x] Verify health probes use password
 
 ### 4.2 TLS
-- [ ] Create cluster with TLS config (ca.crt, tls.crt, tls.key)
-- [ ] Verify Redis starts with TLS enabled
-- [ ] Verify cluster bus uses TLS
-- [ ] Verify redis-cli commands include `--tls --cert --key --cacert`
+- [x] Create cluster with TLS config (ca.crt, tls.crt, tls.key)
+- [x] Verify Redis starts with TLS enabled
+- [x] Verify cluster bus uses TLS
+- [x] Verify redis-cli commands include `--tls --cert --key --cacert`
 
 ---
 
@@ -88,57 +88,4 @@
 
 ### 7.1 Service Types
 - [ ] ClusterIP (default) -> verify internal access
-- [ ] NodePort -> verify external access via node IP
 - [ ] Verify headless service for StatefulSet DNS
-
----
-
-## 8. Status & Events
-
-### 8.1 Status Accuracy
-- [ ] Verify `readyLeaderReplicas` matches actual ready leaders
-- [ ] Verify `readyFollowerReplicas` matches actual ready followers
-- [ ] Verify state is `Ready` when cluster is healthy
-- [ ] Verify state is `Failed` when unhealthy nodes exist
-
-### 8.2 Kubernetes Events
-- [ ] Verify `RedisClusterDownscale` event during scale down
-
----
-
-## Quick Test Commands
-
-```bash
-# Apply test cluster
-kubectl apply -f test-redis-cluster.yaml
-
-# Check CR status
-kubectl get rediscluster -o wide
-
-# Check pods
-kubectl get pods -l app=test-redis-cluster
-
-# Check cluster info from any leader
-kubectl exec test-redis-cluster-leader-0 -- redis-cli cluster info
-kubectl exec test-redis-cluster-leader-0 -- redis-cli cluster nodes
-
-# Check slot distribution
-kubectl exec test-redis-cluster-leader-0 -- redis-cli --cluster check localhost:6379
-
-# Write/read test data
-kubectl exec test-redis-cluster-leader-0 -- redis-cli -c set foo bar
-kubectl exec test-redis-cluster-leader-0 -- redis-cli -c get foo
-
-# Scale up: edit CR
-kubectl edit rediscluster test-redis-cluster
-# Change redisLeader.replicaCount: 5, redisFollower.replicaCount: 5
-
-# Scale down: edit CR back
-# Change redisLeader.replicaCount: 3, redisFollower.replicaCount: 3
-
-# Simulate pod failure
-kubectl delete pod test-redis-cluster-leader-0
-
-# Check operator logs
-kubectl logs -l app=redis-operator -f
-```

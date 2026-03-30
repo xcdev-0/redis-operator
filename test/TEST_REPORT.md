@@ -83,8 +83,6 @@ spec:
 | 8 | Failover 후 데이터 보존 | ✅ PASS | 모든 키 유지됨 |
 | 9 | Redis Exporter Sidecar | ✅ PASS | 포트 9121 메트릭 노출 |
 | 10 | PVC 자동 생성 (데이터 영속화) | ✅ PASS | node + data PVC |
-| 11 | NodePort 외부 접속 | ✅ PASS | 외부 IP:NodePort로 접속 + 리다이렉트 |
-| 12 | cluster-announce 설정 | ✅ PASS | MOVED 응답에 외부 IP:NodePort 포함 |
 
 ---
 
@@ -249,56 +247,7 @@ kubectl exec -it test-redis-cluster-leader-1 -c redis -- redis-cli -c GET testke
 
 ---
 
-## 5. NodePort 외부 접속 테스트
-
-### 테스트 목적
-클러스터 외부에서 NodePort를 통해 Redis 클러스터에 접속하고, 슬롯 리다이렉트가 외부 IP:NodePort로 정상 동작하는지 확인
-
-### 결과: ✅ PASS
-
-**5-1. NodePort Service 생성 확인 (`kubectl get svc | grep nodeport -i`)**
-```
-test-redis-cluster-leader-0          NodePort   10.102.246.207   <none>   6379:30846/TCP,16379:31417/TCP
-test-redis-cluster-leader-1          NodePort   10.102.77.16     <none>   6379:30465/TCP,16379:30521/TCP
-test-redis-cluster-leader-2          NodePort   10.108.142.64    <none>   6379:31190/TCP,16379:31386/TCP
-test-redis-cluster-leader-additional NodePort   10.102.205.129   <none>   6379:32136/TCP
-```
-
-**5-2. 외부에서 NodePort 접속 및 데이터 쓰기/읽기**
-```bash
-❯ redis-cli -h 192.168.0.55 -p 30846 -c
-
-192.168.0.55:30846> set name dmswjd
--> Redirected to slot [5798] located at 192.168.0.55:30465
-OK
-
-192.168.0.55:30465> get name
-"dmswjd"
-```
-
-**5-3. 슬롯 리다이렉트 외부 IP 확인 (cluster-announce 설정 검증)**
-```bash
-# -c 옵션 없이 접속 시 MOVED 응답 확인
-❯ redis-cli -h 192.168.0.55 -p 30846
-
-192.168.0.55:30846> set name dmswjd
-(error) MOVED 5798 192.168.0.55:30465
-#                   ^^^^^^^^^^^^^^ ^^^^^ 
-#                   워커노드 외부IP  NodePort
-```
-
-**확인 사항:**
-- 각 Leader Pod별 NodePort Service 자동 생성됨
-- 외부 클라이언트(맥)에서 워커노드 IP:NodePort로 직접 접속 성공
-- MOVED 리다이렉트 응답에 **외부 IP + NodePort**가 포함됨 (cluster-announce-ip/port 정상 설정)
-- `-c` 옵션으로 자동 리다이렉트 따라가기 성공
-- 리다이렉트된 노드에서 데이터 쓰기/읽기 정상 동작
-
-> **핵심 포인트**: `cluster-announce-ip`와 `cluster-announce-port`가 NodePort에 맞게 자동 설정되어, 외부 클라이언트가 MOVED 응답을 따라 다른 노드로 정상 리다이렉트됨. 이 설정이 없으면 내부 Pod IP로 응답하여 외부 접근이 불가능함.
-
----
-
-## 6. Operator 로그 분석
+## 5. Operator 로그 분석
 
 ### Operator 정상 동작 확인
 
@@ -344,8 +293,6 @@ DEBUG   Redis service is already in-sync
 | **Prometheus Exporter** | ✅ 검증 완료 | redis-exporter sidecar 정상 실행 |
 | **Init Container** | ✅ 검증 완료 | bootstrap-agent로 설정 자동 생성 |
 | **Leader Election** | ✅ 검증 완료 | Operator 다중 인스턴스 지원 |
-| **NodePort 외부 접속** | ✅ 검증 완료 | 외부에서 NodePort로 클러스터 접속 + 데이터 쓰기/읽기 |
-| **cluster-announce 자동 설정** | ✅ 검증 완료 | MOVED 응답에 외부 IP:NodePort 포함, 리다이렉트 정상 동작 |
 
 ---
 

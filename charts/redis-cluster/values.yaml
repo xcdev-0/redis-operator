@@ -1,0 +1,112 @@
+redisCluster:
+  enabled: true
+  name: "mycluster"
+  namespace: ""
+  labels: {}
+  annotations: {}
+  spec:
+    clusterSize: 3
+    clusterVersion: v7
+    TLS:
+      secret:
+        secretName: redis-tls-secret
+      caKey: ca.crt
+      certKey: tls.crt
+      keyKey: tls.key
+
+    storage:
+      additionalVolumeAndMounts:
+        volumes: []
+        volumeMounts: []
+      node:
+        enabled: true
+        persistentVolumeClaim:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 100Mi
+      data:
+        enabled: true
+        persistentVolumeClaim:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+
+    redisLeader:
+      redisConfig: {}
+      containerSecurityContext:
+        capabilities:
+          add:
+            - NET_ADMIN
+            - NET_RAW
+
+    redisFollower:
+      redisConfig: {}
+      containerSecurityContext:
+        capabilities:
+          add:
+            - NET_ADMIN
+            - NET_RAW
+
+    kubernetesConfig:
+      image: redis:7.2-alpine
+      imagePullPolicy: IfNotPresent
+      redisSecret:
+        name: redis-password-secret
+        key: password
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    redisExporter:
+      enabled: true
+      image: oliver006/redis_exporter:latest
+      imagePullPolicy: IfNotPresent
+      port: 9121
+      env: []
+
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  labels:
+    release: prometheus
+    monitoring.ejlabs.in/target: redis
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      redis.ej.com/metrics-scrape: "true"
+  endpoints:
+    port: redis-exporter
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: true
+
+prometheusRule:
+  enabled: true
+  namespace: ""
+  labels:
+    release: prometheus
+    monitoring.ejlabs.in/target: redis
+  annotations: {}
+  for:
+    redisDown: 2m
+    clusterStateFail: 5m
+    memoryUsageHigh: 10m
+    rejectedConnectionsHigh: 5m
+    evictedKeysHigh: 10m
+  thresholds:
+    memoryUsagePercent: 90
+    rejectedConnectionsIncrease: 0
+    evictedKeysIncrease: 0

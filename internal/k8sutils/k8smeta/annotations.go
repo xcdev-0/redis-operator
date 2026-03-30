@@ -19,12 +19,16 @@ func GenerateServiceAnots(serviceMeta metav1.ObjectMeta, additionalAnnotations m
 	anots := map[string]string{
 		"redis.ej.com":          "true",
 		"redis.ej.com/instance": serviceMeta.GetName(),
-		"prometheus.io/scrape":  "true",
-		"prometheus.io/port":    "9121",
 	}
-	if exporterPort, ok := epp(); ok {
-		anots["prometheus.io/port"] = strconv.Itoa(exporterPort)
+
+	// Only annotate scrape metadata when the Service actually exposes exporter metrics.
+	if epp != nil {
+		if exporterPort, ok := epp(); ok {
+			anots["prometheus.io/scrape"] = "true"
+			anots["prometheus.io/port"] = strconv.Itoa(exporterPort)
+		}
 	}
+
 	maps.Copy(anots, serviceMeta.GetAnnotations())
 	maps.Copy(anots, additionalAnnotations)
 	return filterAnnotations(anots)

@@ -111,14 +111,6 @@ func (c *ContainerParameters) GetEnvVars() []corev1.EnvVar {
 		envVars = append(envVars, c.TLSConfig.generateTLSEnvironmentVariables()...)
 	}
 
-	// ACL 모드 활성화
-	if c.ACLConfig != nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  consts.ACL_MODE,
-			Value: "true", // ACL 사용 여부
-		})
-	}
-
 	// Redis 연결 주소 환경 변수 (포트 설정 후 주소 생성)
 	envVars = append(envVars, corev1.EnvVar{
 		Name:  consts.REDIS_ADDR,
@@ -177,7 +169,7 @@ func getProbeInfo(probe *corev1.Probe, enableTLS, enableAuth bool) *corev1.Probe
 		// TLS가 활성화된 경우 TLS 인자 추가
 		// MTLS 활성화된 경우 대비해(tls-auth-clients yes) tls.crt, tls.key도 추가
 		if enableTLS {
-			healthChecker = append(healthChecker, "--tls", "--cert", "${REDIS_TLS_CERT}", "--key", "${REDIS_TLS_CERT_KEY}", "--cacert", "${REDIS_TLS_CA_KEY}")
+			healthChecker = append(healthChecker, "--tls", "--cert", "${REDIS_TLS_CERT}", "--key", "${REDIS_TLS_KEY}", "--cacert", "${REDIS_TLS_CA_CERT}")
 		}
 		healthChecker = append(healthChecker, "ping") // ping 명령어로 연결 확인
 		probe.ProbeHandler = corev1.ProbeHandler{
@@ -204,7 +196,7 @@ func GenerateAuthAndTLSArgs(enableAuth, enableTLS bool) (string, string) {
 		authArgs = " -a \"${REDIS_PASSWORD}\""
 	}
 	if enableTLS {
-		tlsArgs = " --tls --cert \"${REDIS_TLS_CERT}\" --key \"${REDIS_TLS_CERT_KEY}\" --cacert \"${REDIS_TLS_CA_KEY}\""
+		tlsArgs = " --tls --cert \"${REDIS_TLS_CERT}\" --key \"${REDIS_TLS_KEY}\" --cacert \"${REDIS_TLS_CA_CERT}\""
 	}
 
 	return authArgs, tlsArgs
@@ -265,11 +257,6 @@ func (c *ContainerParameters) GetVolumeMounts(containerName string) []corev1.Vol
 	// TLS 인증서 볼륨
 	if tlsConfig := NewTLSVolumeConfig(c.TLSConfig); tlsConfig != nil {
 		mounts = append(mounts, tlsConfig.VolumeMount)
-	}
-
-	// ACL 설정 볼륨
-	if aclConfig := NewACLVolumeConfig(c.ACLConfig); aclConfig != nil {
-		mounts = append(mounts, aclConfig.VolumeMount)
 	}
 
 	// 외부 설정 볼륨 (유저가 제공한 컨피그맵)
@@ -392,11 +379,6 @@ func (c *ContainerParameters) getExporterVolumeMount() []corev1.VolumeMount {
 	// TLS 인증서 볼륨
 	if tlsConfig := NewTLSVolumeConfig(c.TLSConfig); tlsConfig != nil {
 		mounts = append(mounts, tlsConfig.VolumeMount)
-	}
-
-	// ACL 설정 볼륨
-	if aclConfig := NewACLVolumeConfig(c.ACLConfig); aclConfig != nil {
-		mounts = append(mounts, aclConfig.VolumeMount)
 	}
 
 	// 추가 볼륨 마운트

@@ -19,7 +19,7 @@ func TestApplyClusterWritesClusterConfigFileDirective(t *testing.T) {
 	cfgPath := filepath.Join(tmpDir, "redis.conf")
 	cfg := agentutil.NewConfig(cfgPath, "")
 
-	applyCluster(cfg, "false", "/node-conf", "v7")
+	applyCluster(cfg, "/node-conf", "v7")
 	if err := cfg.Commit(); err != nil {
 		t.Fatalf("failed to commit config: %v", err)
 	}

@@ -8,7 +8,7 @@ nameOverride: "prometheus"
 
 ## Override the deployment namespace
 ##
-namespaceOverride: "monitoring"
+namespaceOverride: ""
 
 ## Provide a k8s version to auto dashboard import script example: kubeTargetVersionOverride: 1.26.6
 ##
@@ -4174,12 +4174,15 @@ prometheus:
     ## prometheus resource to be created with selectors based on values in the helm deployment,
     ## which will also match the servicemonitors created
     ##
-    serviceMonitorSelectorNilUsesHelmValues: true
+    serviceMonitorSelectorNilUsesHelmValues: false
 
     ## ServiceMonitors to be selected for target discovery.
-    ## If {}, select all ServiceMonitors
+    ## Explicit selector to avoid implicit Helm release-based matching.
+    ## Match ServiceMonitor label used by this Helm release.
     ##
-    serviceMonitorSelector: {}
+    serviceMonitorSelector:
+      matchLabels:
+        release: "prometheus"
     ## Example which selects ServiceMonitors with label "prometheus" set to "somelabel"
     # serviceMonitorSelector:
     #   matchLabels:
@@ -4187,7 +4190,13 @@ prometheus:
 
     ## Namespaces to be selected for ServiceMonitor discovery.
     ##
-    serviceMonitorNamespaceSelector: {}
+    serviceMonitorNamespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            - default
+            - monitoring
     ## Example which selects ServiceMonitors in namespaces with label "prometheus" set to "somelabel"
     # serviceMonitorNamespaceSelector:
     #   matchLabels:

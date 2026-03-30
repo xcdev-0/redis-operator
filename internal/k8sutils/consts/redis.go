@@ -41,12 +41,6 @@ const (
 	REDIS_TLS_KEY = "REDIS_TLS_KEY"
 )
 
-// ACL 관련 환경 변수 이름
-const (
-	// ACL_MODE는 ACL 모드 활성화 여부를 설정합니다
-	ACL_MODE = "ACL_MODE"
-)
-
 // Persistence 관련 환경 변수 이름
 const (
 	// DATA_PERSISTENCE_ENABLED는 데이터 영속성 활성화 여부를 설정합니다

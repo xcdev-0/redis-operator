@@ -42,9 +42,6 @@ spec:
       type: RollingUpdate
       rollingUpdate:
         maxUnavailable: 1
-    persistentVolumeClaimRetentionPolicy:
-      whenDeleted: Retain
-      whenScaled: Delete
     minReadySeconds: 10
 
     # -- Service 설정 --
@@ -54,7 +51,7 @@ spec:
         prometheus.io/scrape: "true"
       includeBusPort: true
       additional:
-        type: NodePort
+        type: LoadBalancer
         enabled: true
         annotations:
           service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
@@ -212,7 +209,6 @@ spec:
     # Redis 데이터 PVC
     data:
       enabled: true
-      keepAfterDelete: true
       volumeClaimTemplate:
         metadata:
           name: redis-data
@@ -256,12 +252,6 @@ spec:
     caKey: ca.crt
     certKey: tls.crt
     keyKey: tls.key
-
-  # ===== ACL 설정 =====
-  acl:
-    secret:
-      secretName: redis-acl-secret
-    # persistentVolumeClaim: redis-acl-pvc  # secret이 우선순위 높음
 
   # ===== Pod 보안 설정 =====
   podSecurityContext:

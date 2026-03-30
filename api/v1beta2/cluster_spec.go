@@ -36,7 +36,6 @@ type RedisClusterSpec struct {
 
 	// ===== 보안 및 인증 설정 =====
 	TLS                *TLSConfig                 `json:"TLS,omitempty"`
-	ACL                *ACLConfig                 `json:"acl,omitempty"`
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 	PriorityClassName  string                     `json:"priorityClassName,omitempty"`
 
@@ -65,9 +64,8 @@ type KubernetesConfig struct {
 	ExistingPasswordSecret *ExistingPasswordSecret      `json:"redisSecret,omitempty"`
 
 	// ===== StatefulSet 설정 =====
-	UpdateStrategy                       appsv1.StatefulSetUpdateStrategy                        `json:"updateStrategy,omitempty"`
-	PersistentVolumeClaimRetentionPolicy *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy `json:"persistentVolumeClaimRetentionPolicy,omitempty"`
-	MinReadySeconds                      *int32                                                  `json:"minReadySeconds,omitempty"`
+	UpdateStrategy  appsv1.StatefulSetUpdateStrategy `json:"updateStrategy,omitempty"`
+	MinReadySeconds *int32                           `json:"minReadySeconds,omitempty"`
 
 	// ===== Service 설정 =====
 	Service *ServiceConfig `json:"service,omitempty"`
@@ -93,7 +91,7 @@ type RedisConfig struct {
 // ==================================================
 // +k8s:deepcopy-gen=true
 type ServiceConfig struct {
-	// +kubebuilder:validation:Enum=LoadBalancer;NodePort;ClusterIP
+	// +kubebuilder:validation:Enum=LoadBalancer;ClusterIP
 	ServiceType        string            `json:"serviceType,omitempty"`
 	ServiceAnnotations map[string]string `json:"annotations,omitempty"`
 	IncludeBusPort     *bool             `json:"includeBusPort,omitempty"`
@@ -102,7 +100,7 @@ type ServiceConfig struct {
 
 // +k8s:deepcopy-gen=true
 type Service struct {
-	// +kubebuilder:validation:Enum=LoadBalancer;NodePort;ClusterIP
+	// +kubebuilder:validation:Enum=LoadBalancer;ClusterIP
 	// +kubebuilder:default:=ClusterIP
 	Type string `json:"type,omitempty"`
 	// +kubebuilder:default:=true
@@ -133,7 +131,6 @@ type AdditionalVolumeAndMounts struct {
 // +k8s:deepcopy-gen=true
 type DataStorage struct {
 	Enabled               bool                         `json:"enabled,omitempty"`
-	KeepAfterDelete       bool                         `json:"keepAfterDelete,omitempty"`
 	PersistentVolumeClaim corev1.PersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 }
 
@@ -300,17 +297,4 @@ func (tc *TLSConfig) GetKeyFile() string {
 		return "tls.key"
 	}
 	return tc.KeyFile
-}
-
-// ==================================================
-// ACL Config
-// ==================================================
-// +k8s:deepcopy-gen=true
-type ACLConfig struct {
-	// Secret은 ACL 파일이 저장된 Kubernetes Secret을 참조합니다.
-	// PersistentVolumeClaimName보다 우선순위가 높습니다.
-	Secret *corev1.SecretVolumeSource `json:"secret,omitempty"`
-	// PersistentVolumeClaimName은 ACL 파일이 저장된 PVC의 이름입니다.
-	// Secret이 설정되지 않은 경우에만 사용됩니다.
-	PersistentVolumeClaimName *string `json:"persistentVolumeClaim,omitempty"`
 }

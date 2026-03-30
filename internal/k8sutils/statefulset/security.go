@@ -15,21 +15,21 @@ type TLSConfig struct {
 }
 
 func (t *TLSConfig) GetCaKeyFile() string {
-	if t == nil {
+	if t == nil || t.CaKeyFile == "" {
 		return "ca.crt"
 	}
 	return t.CaKeyFile
 }
 
 func (t *TLSConfig) GetCertKeyFile() string {
-	if t == nil {
+	if t == nil || t.CertKeyFile == "" {
 		return "tls.crt"
 	}
 	return t.CertKeyFile
 }
 
 func (t *TLSConfig) GetKeyFile() string {
-	if t == nil {
+	if t == nil || t.KeyFile == "" {
 		return "tls.key"
 	}
 	return t.KeyFile
@@ -66,49 +66,4 @@ func (t *TLSConfig) generateTLSEnvironmentVariables() []corev1.EnvVar {
 		Value: path.Join(root, tlsCertKey), // 예: /tls/tls.key
 	})
 	return envVars
-}
-
-type ACLConfig struct {
-	Secret                    *corev1.SecretVolumeSource
-	PersistentVolumeClaimName *string
-}
-
-// GetVolumeName은 ACL 볼륨의 이름을 반환합니다.
-// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
-func (a *ACLConfig) GetVolumeName() string {
-	if a == nil {
-		return ""
-	}
-	// Secret이 설정된 경우
-	if a.Secret != nil {
-		return consts.VolumeNameACLSecret
-	}
-	// PVC가 설정된 경우
-	if a.PersistentVolumeClaimName != nil {
-		return consts.VolumeNameACLPVC
-	}
-	return ""
-}
-
-// GetVolumeSource는 ACL 볼륨의 VolumeSource를 반환합니다.
-// Secret이 우선순위가 높으며, 없으면 PVC를 사용합니다.
-func (a *ACLConfig) GetVolumeSource() *corev1.VolumeSource {
-	if a == nil {
-		return nil
-	}
-	// Secret이 설정된 경우
-	if a.Secret != nil {
-		return &corev1.VolumeSource{
-			Secret: a.Secret,
-		}
-	}
-	// PVC가 설정된 경우
-	if a.PersistentVolumeClaimName != nil {
-		return &corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: *a.PersistentVolumeClaimName,
-			},
-		}
-	}
-	return nil
 }

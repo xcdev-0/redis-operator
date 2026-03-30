@@ -1,0 +1,23 @@
+{{- if and .Values.redisCluster.enabled .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "redis-cluster.resourceName" . }}-exporter
+  namespace: {{ .Values.serviceMonitor.namespace | default "monitoring" }}
+  labels:
+    {{- include "redis-cluster.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    {{- toYaml .Values.serviceMonitor.namespaceSelector | nindent 4 }}
+  selector:
+    {{- toYaml .Values.serviceMonitor.selector | nindent 4 }}
+  endpoints:
+    - port: {{ .Values.serviceMonitor.endpoints.port }}
+      path: {{ .Values.serviceMonitor.endpoints.path }}
+      interval: {{ .Values.serviceMonitor.endpoints.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.endpoints.scrapeTimeout }}
+      honorLabels: {{ .Values.serviceMonitor.endpoints.honorLabels }}
+{{- end }}

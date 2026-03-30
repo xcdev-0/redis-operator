@@ -2,6 +2,7 @@
 
 테스트 일시: `2026-02-13`  
 네임스페이스/리소스: `default/ejcluster`
+배포 방식: `Helm (charts/redis-cluster)`
 
 ## 목적
 - 스케일업 후 클러스터 상태가 정상인지 확인
@@ -9,6 +10,15 @@
 - 증가한 ordinal(3~5)의 PVC가 정상 생성되는지 확인
 
 ## 사전 상태
+- 초기 배포 명령:
+
+```bash
+helm upgrade --install ejcluster ./charts/redis-cluster -n default --create-namespace \
+  --set redisCluster.enabled=true \
+  --set redisCluster.name=ejcluster \
+  --set redisCluster.spec.clusterSize=3
+```
+
 - `RedisCluster`: `clusterSize=3`, `readyLeaderReplicas=3`, `readyFollowerReplicas=3`, `state=Ready`
 - `StatefulSet`: `ejcluster-leader 3/3`, `ejcluster-follower 3/3`
 - Redis Cluster: `cluster_state:ok`, `cluster_known_nodes:6`, `cluster_size:3`
@@ -44,7 +54,10 @@ precheck_total=180 bad=0
 실행 명령:
 
 ```bash
-kubectl patch rediscluster ejcluster -n default --type merge -p '{"spec":{"clusterSize":6}}'
+helm upgrade ejcluster ./charts/redis-cluster -n default \
+  --set redisCluster.enabled=true \
+  --set redisCluster.name=ejcluster \
+  --set redisCluster.spec.clusterSize=6
 ```
 
 완료 추적:
