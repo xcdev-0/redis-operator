@@ -4,21 +4,9 @@ import "testing"
 
 func TestGetReplicaCountUsesClusterSizeOnly(t *testing.T) {
 	clusterSize := int32(3)
-	leaderReplica := int32(7)
-	followerReplica := int32(1)
 
 	spec := &RedisClusterSpec{
 		ClusterSize: &clusterSize,
-		RedisLeader: RedisLeader{
-			RedisRoleSpec: RedisRoleSpec{
-				ReplicaCount: &leaderReplica,
-			},
-		},
-		RedisFollower: RedisFollower{
-			RedisRoleSpec: RedisRoleSpec{
-				ReplicaCount: &followerReplica,
-			},
-		},
 	}
 
 	if got := spec.GetReplicaCount("leader"); got != clusterSize {

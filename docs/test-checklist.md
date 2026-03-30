@@ -12,7 +12,7 @@
 - [x] Verify Pod role labels match actual Redis roles
 
 ### 1.2 Scale Up
-- [x] Scale leader from 3 -> 5 (update CR `redisLeader.replicaCount`)
+- [x] Scale cluster from 3 -> 5 (update CR `spec.clusterSize`)
 - [x] Verify new leader pods are added to the cluster via `CLUSTER ADD-NODE`
 - [x] Verify slots are rebalanced to new leaders (`--cluster-use-empty-masters`)
 - [x] Scale follower from 3 -> 5

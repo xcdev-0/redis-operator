@@ -154,10 +154,7 @@ func (re *RedisExporter) IsEnabled() bool {
 // +k8s:deepcopy-gen=true
 type RedisRoleSpec struct {
 	// ===== 기본 설정 =====
-	// Deprecated: replicaCount is ignored.
-	// Use spec.clusterSize as the single source of truth for leader/follower replicas.
-	ReplicaCount *int32                       `json:"replicaCount,omitempty"`
-	Resources    *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
 	// ===== Redis 설정 =====
 	RedisConfig *RedisConfig `json:"redisConfig,omitempty"`

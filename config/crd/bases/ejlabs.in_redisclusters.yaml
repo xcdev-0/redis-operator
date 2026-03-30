@@ -66,7 +66,7 @@ spec:
           spec:
             description: |-
               spec defines the desired state of RedisCluster.
-              Replica scale source is spec.clusterSize (leader/follower replicaCount overrides are ignored).
+              Replica scale source is spec.clusterSize.
             properties:
               TLS:
                 description: ===== 보안 및 인증 설정 =====
@@ -2596,13 +2596,6 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
-                  replicaCount:
-                    description: |-
-                      ===== 기본 설정 =====
-                      Deprecated: replicaCount is ignored.
-                      Use spec.clusterSize as the single source of truth for leader/follower replicas.
-                    format: int32
-                    type: integer
                   resources:
                     description: ResourceRequirements describes the compute resource
                       requirements.
@@ -4331,13 +4324,6 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
-                  replicaCount:
-                    description: |-
-                      ===== 기본 설정 =====
-                      Deprecated: replicaCount is ignored.
-                      Use spec.clusterSize as the single source of truth for leader/follower replicas.
-                    format: int32
-                    type: integer
                   resources:
                     description: ResourceRequirements describes the compute resource
                       requirements.

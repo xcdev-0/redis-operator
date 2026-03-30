@@ -2587,10 +2587,6 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
-                  replicaCount:
-                    description: ===== 기본 설정 =====
-                    format: int32
-                    type: integer
                   resources:
                     description: ResourceRequirements describes the compute resource
                       requirements.
@@ -4316,10 +4312,6 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
-                  replicaCount:
-                    description: ===== 기본 설정 =====
-                    format: int32
-                    type: integer
                   resources:
                     description: ResourceRequirements describes the compute resource
                       requirements.

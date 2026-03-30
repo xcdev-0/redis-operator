@@ -52,7 +52,6 @@ spec:
 
   # ===== Redis Leader 설정 =====
   redisLeader:
-    replicaCount: 3
     resources:
       requests:
         cpu: "200m"
@@ -119,7 +118,6 @@ spec:
 
   # ===== Redis Follower 설정 =====
   redisFollower:
-    replicaCount: 3
     resources:
       requests:
         cpu: "100m"
