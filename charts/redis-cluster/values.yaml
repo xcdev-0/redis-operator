@@ -15,9 +15,6 @@ redisCluster:
       keyKey: tls.key
 
     storage:
-      additionalVolumeAndMounts:
-        volumes: []
-        volumeMounts: []
       node:
         enabled: true
         persistentVolumeClaim:

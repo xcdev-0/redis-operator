@@ -16,9 +16,7 @@ type RedisClusterSpec struct {
 	// +kubebuilder:default:=v7
 	ClusterVersion *string `json:"clusterVersion,omitempty"`
 	// +kubebuilder:default:=6379
-	ClientPort  *int `json:"clientPort,omitempty"`
-	HostPort    *int `json:"hostPort,omitempty"`
-	HostNetwork bool `json:"hostNetwork,omitempty"`
+	ClientPort *int `json:"clientPort,omitempty"`
 
 	// ===== Kubernetes 기본 설정 =====
 	// 이미지, 리소스, 업데이트 전략, 서비스 설정 등이 포함됩니다.
@@ -30,9 +28,8 @@ type RedisClusterSpec struct {
 	RedisFollower RedisFollower `json:"redisFollower,omitempty"`
 
 	// ===== Redis 설정 =====
-	RedisConfig   *RedisConfig    `json:"redisConfig,omitempty"`
-	Storage       *ClusterStorage `json:"storage,omitempty"`
-	DynamicConfig []string        `json:"dynamicConfig,omitempty"`
+	RedisConfig *RedisConfig    `json:"redisConfig,omitempty"`
+	Storage     *ClusterStorage `json:"storage,omitempty"`
 
 	// ===== 보안 및 인증 설정 =====
 	TLS                *TLSConfig                 `json:"TLS,omitempty"`
@@ -69,9 +66,6 @@ type KubernetesConfig struct {
 
 	// ===== Service 설정 =====
 	Service *ServiceConfig `json:"service,omitempty"`
-
-	// ===== 기타 설정 =====
-	IgnoreAnnotations []string `json:"ignoreAnnotations,omitempty"`
 }
 
 // ==================================================
@@ -81,9 +75,8 @@ type KubernetesConfig struct {
 type RedisConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
-	MaxMemoryPercentOfLimit *int `json:"maxMemoryPercentOfLimit,omitempty"`
-	// DynamicConfig           []string `json:"dynamicConfig,omitempty"`
-	AdditionalRedisConfig *string `json:"additionalRedisConfig,omitempty"`
+	MaxMemoryPercentOfLimit *int    `json:"maxMemoryPercentOfLimit,omitempty"`
+	AdditionalRedisConfig   *string `json:"additionalRedisConfig,omitempty"`
 }
 
 // ==================================================
@@ -91,22 +84,8 @@ type RedisConfig struct {
 // ==================================================
 // +k8s:deepcopy-gen=true
 type ServiceConfig struct {
-	// +kubebuilder:validation:Enum=LoadBalancer;ClusterIP
-	ServiceType        string            `json:"serviceType,omitempty"`
 	ServiceAnnotations map[string]string `json:"annotations,omitempty"`
 	IncludeBusPort     *bool             `json:"includeBusPort,omitempty"`
-	Additional         *Service          `json:"additional,omitempty"`
-}
-
-// +k8s:deepcopy-gen=true
-type Service struct {
-	// +kubebuilder:validation:Enum=LoadBalancer;ClusterIP
-	// +kubebuilder:default:=ClusterIP
-	Type string `json:"type,omitempty"`
-	// +kubebuilder:default:=true
-	Enabled        *bool             `json:"enabled,omitempty"`
-	Annotations    map[string]string `json:"annotations,omitempty"`
-	IncludeBusPort *bool             `json:"includeBusPort,omitempty"`
 }
 
 // ==================================================
@@ -115,16 +94,8 @@ type Service struct {
 // 레디스 클러스터 전용 스토리지 설정
 // +k8s:deepcopy-gen=true
 type ClusterStorage struct {
-	Node                      NodeStorage               `json:"node,omitempty"`
-	Data                      DataStorage               `json:"data,omitempty"`
-	AdditionalVolumeAndMounts AdditionalVolumeAndMounts `json:"additionalVolumeAndMounts,omitempty"`
-}
-
-// 유저 전용 볼륨 마운트 설정
-// +k8s:deepcopy-gen=true
-type AdditionalVolumeAndMounts struct {
-	Volumes      []corev1.Volume      `json:"volumes,omitempty"`
-	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
+	Node NodeStorage `json:"node,omitempty"`
+	Data DataStorage `json:"data,omitempty"`
 }
 
 // Redis 데이터 전용 PVC

@@ -46,7 +46,7 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSTS(ctx c
 		ClusterName:      cr.Name,
 	})
 
-	stsAnnotations := k8smeta.GenerateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
+	stsAnnotations := k8smeta.GenerateStatefulSetsAnots(cr.ObjectMeta)
 	stsObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:        stsName,
 		Namespace:   cr.Namespace,
@@ -101,11 +101,9 @@ func generateStatefulSetParams(
 		Tolerations:                   roleParams.Tolerations,                   // Pod 톨러레이션
 		TerminationGracePeriodSeconds: roleParams.TerminationGracePeriodSeconds, // Pod 종료 유예 기간
 		ServiceAccountName:            cr.Spec.ServiceAccountName,               // Pod ServiceAccount
-		HostNetwork:                   cr.Spec.HostNetwork,                      // Pod 호스트 네트워크
 
 		// StatefulSet 설정
-		UpdateStrategy:    cr.Spec.KubernetesConfig.UpdateStrategy,    // 업데이트 전략
-		IgnoreAnnotations: cr.Spec.KubernetesConfig.IgnoreAnnotations, // 무시할 어노테이션
+		UpdateStrategy: cr.Spec.KubernetesConfig.UpdateStrategy, // 업데이트 전략
 	}
 	// Redis Exporter 메트릭 활성화 여부
 	if cr.Spec.RedisExporter != nil {
@@ -120,10 +118,6 @@ func generateStatefulSetParams(
 	}
 	if cr.Spec.IsNodePersistenceEnabled() {
 		stsParams.NodeConfPVC = cr.Spec.Storage.Node.PersistentVolumeClaim
-	}
-	// 스토리지 설정 (데이터 저장용 PVC 및 노드 설정용 PVC)
-	if cr.Spec.Storage.AdditionalVolumeAndMounts.Volumes != nil {
-		stsParams.AdditionalVolumes = cr.Spec.Storage.AdditionalVolumeAndMounts.Volumes
 	}
 	// StatefulSet 재생성 어노테이션 확인
 	// 변경 불가능한 필드(VolumeClaimTemplate 등) 변경 시 StatefulSet을 재생성해야 합니다.
@@ -179,7 +173,6 @@ func generateRedisClusterContainerParams(
 		Resources:               roleParams.Resources,
 		SecurityContext:         roleParams.ContainerSecurityContext,
 		Port:                    cr.GetClientPort(),
-		HostPort:                cr.Spec.HostPort,
 		MaxMemoryPercentOfLimit: cr.Spec.GetRedisMaxPercentOfLimitConfig(roleParams.Role),
 		EnvVars:                 cr.Spec.EnvVars,
 		ReadinessProbe:          roleParams.ReadinessProbe,
@@ -187,7 +180,6 @@ func generateRedisClusterContainerParams(
 		DataPersistenceEnabled:  cr.Spec.IsDataPersistenceEnabled(),
 		NodePersistenceEnabled:  cr.Spec.IsNodePersistenceEnabled(),
 	}
-	applyStorageConfig(&params, cr.Spec.Storage)
 	applyMonitoringConfig(&params, cr.Spec.RedisExporter)
 	applySecurityConfig(&params, cr.Spec.TLS)
 
@@ -196,13 +188,6 @@ func generateRedisClusterContainerParams(
 	}
 
 	return params, nil
-}
-
-// applyStorageConfig는 스토리지 관련 설정을 적용합니다.
-func applyStorageConfig(params *statefulset.ContainerParameters, storage *rcvb2.ClusterStorage) {
-	if storage != nil {
-		params.AdditionalVolumeMounts = storage.AdditionalVolumeAndMounts.VolumeMounts
-	}
 }
 
 // applyAuthConfig는 Redis 인증 설정을 적용합니다.

@@ -59,13 +59,6 @@ func (cr *RedisClusterSpec) GetRedisResources(role string) *corev1.ResourceRequi
 	return cr.KubernetesConfig.Resources
 }
 
-func (cr *RedisClusterSpec) GetRedisDynamicConfig() []string {
-	if cr.DynamicConfig != nil && len(cr.DynamicConfig) > 0 {
-		return cr.DynamicConfig
-	}
-	return []string{}
-}
-
 // GetRedisMaxPercentOfLimitConfig는 역할에 해당하는 maxmemory 퍼센트 설정을 반환합니다.
 // 우선순위: 역할별 RedisConfig > 최상위 RedisConfig
 func (cr *RedisClusterSpec) GetRedisMaxPercentOfLimitConfig(role string) *int {
@@ -94,32 +87,6 @@ func (cr *RedisClusterSpec) GetAdditionalRedisConfig(role string) *string {
 // kubernetes config inline functions
 // ==================================================
 
-// additional service
-func (in *KubernetesConfig) ShouldCreateAdditionalService() bool {
-	if in.Service == nil {
-		return false
-	}
-	if in.Service.Additional == nil {
-		return false
-	}
-	if in.Service.Additional.Enabled == nil {
-		return false
-	}
-	return *in.Service.Additional.Enabled
-}
-func (kc *KubernetesConfig) ShouldIncludeBusPortForAdditional() bool {
-	if kc.Service == nil {
-		return false
-	}
-	if kc.Service.Additional == nil {
-		return false
-	}
-	if kc.Service.Additional.IncludeBusPort == nil {
-		return false
-	}
-	return *kc.Service.Additional.IncludeBusPort
-}
-
 // 기본 Service 설정
 func (in *KubernetesConfig) GetServiceAnnotations() map[string]string {
 	if in.Service == nil {
@@ -136,11 +103,4 @@ func (kc *KubernetesConfig) ShouldIncludeBusPort() bool {
 		return false
 	}
 	return *kc.Service.IncludeBusPort
-}
-
-func (kc *KubernetesConfig) GetServiceType() string {
-	if kc.Service == nil {
-		return "ClusterIP"
-	}
-	return kc.Service.ServiceType
 }

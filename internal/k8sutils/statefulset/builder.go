@@ -24,9 +24,8 @@ type StatefulSetParameters struct {
 	Tolerations               *[]corev1.Toleration              // Pod 톨러레이션 (테인트 허용)
 	EnableMetrics             bool                              // Redis Exporter 메트릭 활성화 여부
 
-	DataPVC           corev1.PersistentVolumeClaim // 데이터 저장용 PVC 템플릿
-	NodeConfPVC       corev1.PersistentVolumeClaim // 노드 설정 저장용 PVC 템플릿 (클러스터 모드)
-	AdditionalVolumes []corev1.Volume              // 추가 볼륨
+	DataPVC     corev1.PersistentVolumeClaim // 데이터 저장용 PVC 템플릿
+	NodeConfPVC corev1.PersistentVolumeClaim // 노드 설정 저장용 PVC 템플릿 (클러스터 모드)
 
 	ImagePullSecrets              *[]corev1.LocalObjectReference // 이미지 풀 시크릿 (프라이빗 레지스트리용)
 	ServiceAccountName            *string                        // Pod에 사용할 ServiceAccount 이름
@@ -34,24 +33,20 @@ type StatefulSetParameters struct {
 	RecreateStatefulSet           bool
 	RecreateStatefulsetStrategy   *metav1.DeletionPropagation
 	TerminationGracePeriodSeconds *int64
-	IgnoreAnnotations             []string
-	HostNetwork                   bool
 	MinReadySeconds               int32
 }
 
 // ContainerParameters는 Redis 컨테이너 생성에 필요한 모든 파라미터를 담는 구조체입니다.
 // 이 구조체는 메인 Redis 컨테이너와 Redis Exporter 사이드카 컨테이너의 설정을 정의합니다.
 type ContainerParameters struct {
-	RedisSetupType         string               //  cluster, sentinel, standalone 등등 가능
-	ClusterVersion         *string              // Redis 클러스터 버전 (환경변수에 사용)
-	AdditionalRedisConfig  *string              // 외부 ConfigMap 이름 (추가 Redis 설정, Volume/VolumeMount에 사용)
-	AdditionalEnvVariable  *[]corev1.EnvVar     // 추가 환경 변수
-	AdditionalVolumeMounts []corev1.VolumeMount // 추가 볼륨 마운트 경로
-	EnvVars                *[]corev1.EnvVar     // 환경 변수 목록
-	Port                   int                  // Redis 포트 (항상 확정된 값, 기본 6379)
-	HostPort               *int                 // 호스트 포트 (HostNetwork 사용 시)
-	Image                  string               // Redis 컨테이너 이미지
-	ImagePullPolicy        corev1.PullPolicy    // 이미지 풀 정책 (Always, IfNotPresent, Never)
+	RedisSetupType        string            //  cluster, sentinel, standalone 등등 가능
+	ClusterVersion        *string           // Redis 클러스터 버전 (환경변수에 사용)
+	AdditionalRedisConfig *string           // 외부 ConfigMap 이름 (추가 Redis 설정, Volume/VolumeMount에 사용)
+	AdditionalEnvVariable *[]corev1.EnvVar  // 추가 환경 변수
+	EnvVars               *[]corev1.EnvVar  // 환경 변수 목록
+	Port                  int               // Redis 포트 (항상 확정된 값, 기본 6379)
+	Image                 string            // Redis 컨테이너 이미지
+	ImagePullPolicy       corev1.PullPolicy // 이미지 풀 정책 (Always, IfNotPresent, Never)
 
 	// resources
 	Resources               *corev1.ResourceRequirements // 컨테이너 리소스 요구사항 (CPU, 메모리)
@@ -111,7 +106,7 @@ func generateStatefulSetDef(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      objectMeta.GetLabels(), // sts label == pod label
-					Annotations: k8smeta.GenerateStatefulSetsAnots(objectMeta, stsParams.IgnoreAnnotations),
+					Annotations: k8smeta.GenerateStatefulSetsAnots(objectMeta),
 				},
 				Spec: corev1.PodSpec{
 					// 메인 컨테이너 설정
@@ -131,7 +126,6 @@ func generateStatefulSetDef(
 					PriorityClassName:             stsParams.PriorityClassName,
 					Affinity:                      stsParams.Affinity,
 					TerminationGracePeriodSeconds: stsParams.TerminationGracePeriodSeconds,
-					HostNetwork:                   stsParams.HostNetwork,
 				},
 			},
 		},
@@ -143,11 +137,6 @@ func generateStatefulSetDef(
 		statefulset.Spec.Template.Spec.Volumes = append(
 			statefulset.Spec.Template.Spec.Volumes,
 			volumeConfig.Volume)
-	}
-
-	// 추가 볼륨 추가
-	if len(stsParams.AdditionalVolumes) > 0 {
-		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes, stsParams.AdditionalVolumes...)
 	}
 
 	// TLS 인증서 볼륨 추가
@@ -211,7 +200,7 @@ func createPVC(templateName string, objectMeta metav1.ObjectMeta, pvc corev1.Per
 	// StatefulSet과 동일한 라벨
 	newPVC.Labels = objectMeta.GetLabels()
 	// StatefulSet과 동일한 어노테이션
-	newPVC.Annotations = k8smeta.GenerateStatefulSetsAnots(objectMeta, nil)
+	newPVC.Annotations = k8smeta.GenerateStatefulSetsAnots(objectMeta)
 
 	// AccessMode가 지정되지 않으면 기본값으로 ReadWriteOnce 사용
 	if pvc.Spec.AccessModes == nil {

@@ -61,16 +61,6 @@ func (containerParams *ContainerParameters) generateMainContainerDef(
 		}
 	}
 
-	// HostPort가 설정된 경우 포트 매핑 추가
-	if containerParams.HostPort != nil {
-		redisContainer.Ports = []corev1.ContainerPort{
-			{
-				HostPort:      int32(*containerParams.HostPort),
-				ContainerPort: int32(containerParams.Port),
-			},
-		}
-	}
-
 	containers := []corev1.Container{redisContainer}
 
 	return containers
@@ -268,9 +258,6 @@ func (c *ContainerParameters) GetVolumeMounts(containerName string) []corev1.Vol
 	// 기본 설정 볼륨 (항상 포함)
 	mounts = append(mounts, NewConfigVolumeConfig().VolumeMount)
 
-	// 추가 볼륨 마운트
-	mounts = append(mounts, c.AdditionalVolumeMounts...)
-
 	return mounts
 }
 
@@ -380,9 +367,6 @@ func (c *ContainerParameters) getExporterVolumeMount() []corev1.VolumeMount {
 	if tlsConfig := NewTLSVolumeConfig(c.TLSConfig); tlsConfig != nil {
 		mounts = append(mounts, tlsConfig.VolumeMount)
 	}
-
-	// 추가 볼륨 마운트
-	mounts = append(mounts, c.AdditionalVolumeMounts...)
 
 	return mounts
 }

@@ -72,7 +72,7 @@ func patchService(ctx context.Context, storedService *corev1.Service, newService
 
 	// ClusterIP는 Kubernetes가 할당하므로 변경하면 안 됩니다
 	// ClusterIP 타입 서비스의 경우 기존 ClusterIP를 유지해야 합니다
-	if newService.Spec.Type == generateServiceType("ClusterIP") {
+	if newService.Spec.Type == corev1.ServiceTypeClusterIP {
 		newService.Spec.ClusterIP = storedService.Spec.ClusterIP
 	}
 

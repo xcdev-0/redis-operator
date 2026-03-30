@@ -45,8 +45,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 
 	selectorLabels := k8smeta.GetRedisClusterStableLabelsFromLabels(labels)
 
-	// 1 cluter ip, 2 headless, 3 master 서비스는 항상 생성
-	// 4 additional service는 추가 서비스 설정에 따라 생성
+	// 1 cluster ip, 2 headless, 3 master 서비스는 항상 생성
 
 	// 1. cluster ip
 	// svv name: stsName
@@ -85,7 +84,6 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
 		ExporterPortProvider: k8smeta.DisableMetrics,
 		Headless:             false,
-		ServiceType:          "ClusterIP",
 		ClientPort:           cr.GetClientPort(),
 		K8sClient:            cl,
 		ExtraPorts:           clusterIPExtraPorts,
@@ -118,7 +116,6 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
 		ExporterPortProvider: epp,
 		Headless:             true,
-		ServiceType:          "ClusterIP",
 		ClientPort:           cr.GetClientPort(),
 		K8sClient:            cl,
 		ExtraPorts:           []corev1.ServicePort{},
@@ -150,7 +147,6 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 		OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
 		ExporterPortProvider: k8smeta.DisableMetrics,
 		Headless:             false,
-		ServiceType:          "ClusterIP",
 		ClientPort:           cr.GetClientPort(),
 		K8sClient:            cl,
 		ExtraPorts:           []corev1.ServicePort{},
@@ -160,42 +156,6 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Cannot create master service for Redis", "Setup.Type", rcs.role)
 		return err
-	}
-
-	// 4. additional service
-	// svv name: stsName + "-additional"
-	additionalObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
-		Name:      stsName + "-additional",
-		Namespace: cr.Namespace,
-		Labels:    labels,
-		Annotations: k8smeta.GenerateServiceAnots(
-			cr.ObjectMeta,
-			cr.Spec.KubernetesConfig.GetServiceAnnotations(),
-			k8smeta.DisableMetrics),
-	})
-	additionalExtraPorts := []corev1.ServicePort{}
-	if cr.Spec.KubernetesConfig.ShouldIncludeBusPortForAdditional() {
-		additionalExtraPorts = append(additionalExtraPorts, clusterIPBusPort)
-	}
-	if cr.Spec.KubernetesConfig.ShouldCreateAdditionalService() {
-		additionalOpts := ServiceOptions{
-			Namespace:            cr.Namespace,
-			ServiceObjectMeta:    additionalObjectMeta,
-			SelectorLabels:       selectorLabels,
-			OwnerRef:             k8smeta.RedisClusterAsOwner(cr),
-			ExporterPortProvider: k8smeta.DisableMetrics,
-			Headless:             false,
-			ServiceType:          cr.Spec.KubernetesConfig.GetServiceType(),
-			ClientPort:           cr.GetClientPort(),
-			K8sClient:            cl,
-			ExtraPorts:           additionalExtraPorts,
-		}
-		additionalDef := additionalOpts.generateServiceDef()
-		err = additionalOpts.createOrUpdateService(ctx, additionalDef)
-		if err != nil {
-			log.FromContext(ctx).Error(err, "Cannot create additional service for Redis", "Setup.Type", rcs.role)
-			return err
-		}
 	}
 
 	return nil
@@ -208,7 +168,6 @@ type ServiceOptions struct {
 	OwnerRef             metav1.OwnerReference        // Owner reference for garbage collection
 	ExporterPortProvider k8smeta.ExporterPortProvider // Function to get Redis exporter port if enabled
 	Headless             bool                         // Whether to create a headless service (ClusterIP: None)
-	ServiceType          string                       // Service type: "ClusterIP" or "LoadBalancer"
 	ClientPort           int                          // Redis client port number
 	K8sClient            kubernetes.Interface         // Kubernetes client for API operations
 	ExtraPorts           []corev1.ServicePort         // Additional ports to expose (e.g., Redis bus port)
@@ -234,7 +193,7 @@ func (opts ServiceOptions) generateServiceDef() *corev1.Service {
 		TypeMeta:   k8smeta.GenerateTypeMeta("Service", "v1"),
 		ObjectMeta: opts.ServiceObjectMeta,
 		Spec: corev1.ServiceSpec{
-			Type:      generateServiceType(opts.ServiceType),
+			Type:      corev1.ServiceTypeClusterIP,
 			ClusterIP: "", // Empty string means Kubernetes will assign a ClusterIP
 			Selector:  utilmaps.Copy(opts.SelectorLabels),
 			Ports: []corev1.ServicePort{
@@ -272,15 +231,4 @@ func (opts ServiceOptions) generateServiceDef() *corev1.Service {
 	// Set owner reference for garbage collection
 	k8smeta.AddOwnerRefToObject(service, opts.OwnerRef)
 	return service
-}
-
-func generateServiceType(k8sServiceType string) corev1.ServiceType {
-	switch k8sServiceType {
-	case "LoadBalancer":
-		return corev1.ServiceTypeLoadBalancer
-	case "ClusterIP":
-		return corev1.ServiceTypeClusterIP
-	default:
-		return corev1.ServiceTypeClusterIP
-	}
 }

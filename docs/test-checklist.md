@@ -66,7 +66,6 @@
 ### 5.1 Redis Config
 - [ ] Set `maxMemoryPercentOfLimit` -> verify `maxmemory` is calculated correctly
 - [ ] Apply `additionalRedisConfig` via ConfigMap -> verify settings applied
-- [ ] Apply `dynamicConfig` -> verify CONFIG SET runs on all nodes after Ready
 
 ### 5.2 Resource Limits
 - [ ] Verify container resource requests/limits match CR spec

@@ -519,13 +519,6 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// 클러스터 상태를 확인합니다 (redis-cli --cluster check 명령 사용).
 		if cluster.RedisClusterStatusHealth(ctx, r.K8sClient, cr) {
 
-			// 동적 설정을 모든 Redis 인스턴스에 적용합니다.
-			// 동적 설정은 CONFIG SET 명령으로 런타임에 변경 가능한 설정입니다.
-			if err = cluster.SetRedisClusterDynamicConfig(ctx, r.K8sClient, cr); err != nil {
-				logger.Error(err, "Failed to set dynamic config")
-				return intctrlutil.RequeueE(ctx, err, "failed to set dynamic config")
-			}
-
 			// 상태를 Ready로 업데이트합니다.
 			requeue, err := r.updateStatus(ctx, cr, rcvb2.RedisClusterStatus{
 				State:                 rcvb2.RedisClusterReady,

@@ -651,55 +651,6 @@ func getPodIP(ctx context.Context, client kubernetes.Interface, namespace, podNa
 	return pod.Status.PodIP, nil
 }
 
-// redisConfig:
-//
-//	dynamicConfig:
-//	  - "maxmemory-policy allkeys-lru"      # ✅ 가능
-//	  - "slowlog-log-slower-than 5000"      # ✅ 가능
-//	  - "timeout 300"                        # ✅ 가능
-//	  - "maxmemory 1gb"                      # ✅ 가능
-func SetRedisClusterDynamicConfig(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) error {
-	dynamicConfig := cr.Spec.GetRedisDynamicConfig()
-	if len(dynamicConfig) == 0 {
-		return nil
-	}
-
-	// Apply configuration to all pods
-	applyToPods := func(role string, count int32) error {
-		for i := 0; i < int(count); i++ {
-			podName := k8smeta.GetPodName(cr.Name, role, i)
-			redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, podName)
-			defer redisClient.Close()
-
-			pong, err := redisClient.Ping(ctx).Result()
-			if err != nil || pong != "PONG" {
-				log.FromContext(ctx).V(1).Info("Redis instance not accessible", "pod", podName, "error", err)
-				continue
-			}
-
-			for _, config := range dynamicConfig {
-				parts := strings.SplitN(config, " ", 2)
-				if len(parts) != 2 {
-					log.FromContext(ctx).Error(nil, "Invalid config format", "config", config, "pod", podName)
-					continue
-				}
-
-				if err := redisClient.ConfigSet(ctx, parts[0], parts[1]).Err(); err != nil {
-					log.FromContext(ctx).Error(err, "Failed to set config", "key", parts[0], "value", parts[1], "pod", podName)
-					return err
-				}
-				log.FromContext(ctx).V(1).Info("Successfully set config", "key", parts[0], "value", parts[1], "pod", podName)
-			}
-		}
-		return nil
-	}
-
-	if err := applyToPods("leader", cr.Spec.GetReplicaCount("leader")); err != nil {
-		return err
-	}
-	return applyToPods("follower", cr.Spec.GetReplicaCount("follower"))
-}
-
 func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) {
 	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)

@@ -1,4 +1,4 @@
-apiVersion: redis.ej.io/v1beta2
+apiVersion: ejlabs.in/v1beta2
 kind: RedisCluster
 metadata:
   name: my-redis-cluster
@@ -12,8 +12,6 @@ spec:
   clusterSize: 3
   clusterVersion: v7
   clientPort: 6379
-  hostPort: 30379
-  hostNetwork: false
 
   # ===== Kubernetes 기본 설정 =====
   kubernetesConfig:
@@ -46,20 +44,9 @@ spec:
 
     # -- Service 설정 --
     service:
-      serviceType: ClusterIP
       annotations:
         prometheus.io/scrape: "true"
       includeBusPort: true
-      additional:
-        type: LoadBalancer
-        enabled: true
-        annotations:
-          service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-        includeBusPort: false
-
-    # -- 패치 비교 시 무시할 어노테이션 --
-    ignoreAnnotations:
-      - kubectl.kubernetes.io/last-applied-configuration
 
   serviceAccountName: redis-cluster
 
@@ -201,17 +188,12 @@ spec:
   redisConfig:
     maxMemoryPercentOfLimit: 75
     additionalRedisConfig: redis-common-extra-config
-	dynamicConfig:
-      - "hz 100"
-      - "lfu-log-factor 10"
   # ===== 스토리지 설정 =====
   storage:
     # Redis 데이터 PVC
     data:
       enabled: true
-      volumeClaimTemplate:
-        metadata:
-          name: redis-data
+      persistentVolumeClaim:
         spec:
           accessModes:
             - ReadWriteOnce
@@ -223,9 +205,7 @@ spec:
     # Redis 노드 설정 PVC
     node:
       enabled: true
-      volumeClaimTemplate:
-        metadata:
-          name: redis-node-conf
+      persistentVolumeClaim:
         spec:
           accessModes:
             - ReadWriteOnce
@@ -233,17 +213,6 @@ spec:
           resources:
             requests:
               storage: 1Gi
-
-    # 추가 볼륨 & 마운트
-    additionalVolumeAndMounts:
-      volumes:
-        - name: custom-scripts
-          configMap:
-            name: redis-scripts
-      volumeMounts:
-        - name: custom-scripts
-          mountPath: /scripts
-          readOnly: true
 
   # ===== TLS 설정 =====
   TLS:
