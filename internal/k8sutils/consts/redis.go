@@ -21,7 +21,7 @@ const (
 	REDIS_MAJOR_VERSION = "REDIS_MAJOR_VERSION"
 	// REDIS_PORT는 Redis 포트 번호를 설정합니다
 	REDIS_PORT = "REDIS_PORT"
-	// REDIS_ADDR는 Redis 연결 주소를 설정합니다 (예: redisutils://localhost:6379)
+	// REDIS_ADDR는 Redis 연결 주소를 설정합니다 (예: redis://localhost:6379)
 	REDIS_ADDR = "REDIS_ADDR"
 	// REDIS_PASSWORD는 Redis 비밀번호를 설정합니다 (Secret에서 가져옴)
 	REDIS_PASSWORD = "REDIS_PASSWORD"

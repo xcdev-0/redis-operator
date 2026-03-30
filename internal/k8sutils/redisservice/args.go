@@ -25,7 +25,7 @@ func GetRedisPasswordArgs(
 		return []string{}
 	}
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Error in getting redisutils password")
+		log.FromContext(ctx).Error(err, "Error in getting redis password")
 		return []string{}
 	}
 	return []string{"-a", pass}

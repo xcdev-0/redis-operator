@@ -3,7 +3,7 @@
 # metadata:
 #   labels:
 #     control-plane: controller-manager
-#     app.kubernetes.io/name: redis
+#     app.kubernetes.io/name: rediscluster
 #     app.kubernetes.io/managed-by: kustomize
 #   name: system
 # ---

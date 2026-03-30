@@ -22,7 +22,7 @@ func ConfigureRedisClient(ctx context.Context, client kubernetes.Interface, cr *
 	}
 	pass, err := getRedisPassword(ctx, client, cr.Namespace, cr.Spec.KubernetesConfig.ExistingPasswordSecret)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Error in getting redisutils password")
+		log.FromContext(ctx).Error(err, "Error in getting redis password")
 		return nil
 	}
 	endpoint, err := GetEndPoint(ctx, client, cr, redisInfo)

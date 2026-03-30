@@ -51,17 +51,6 @@ func getService(ctx context.Context, k8sClient kubernetes.Interface, namespace s
 	return serviceInfo, nil
 }
 
-// getServicePortByName returns the ServicePort with the specified name
-// Returns nil if not found
-func getServicePortByName(svc *corev1.Service, portName string) *corev1.ServicePort {
-	for i := range svc.Spec.Ports {
-		if svc.Spec.Ports[i].Name == portName {
-			return &svc.Spec.Ports[i]
-		}
-	}
-	return nil
-}
-
 func patchService(ctx context.Context, storedService *corev1.Service, newService *corev1.Service, namespace string, cl kubernetes.Interface) error {
 	// Kubernetes가 관리하는 메타데이터 필드들을 보존하여 원자적 업데이트 보장
 	// ResourceVersion은 낙관적 동시성 제어를 위해 필요합니다
@@ -84,7 +73,7 @@ func patchService(ctx context.Context, storedService *corev1.Service, newService
 		patch.IgnoreField("apiVersion"), // apiVersion은 항상 "v1"이므로 비교에서 제외
 	)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Unable to patch redisutils service with comparison object")
+		log.FromContext(ctx).Error(err, "Unable to patch redis service with comparison object")
 		return err
 	}
 
@@ -100,7 +89,7 @@ func patchService(ctx context.Context, storedService *corev1.Service, newService
 		// 현재 설정을 annotation에 저장하여 다음 reconcile 시 변경사항 감지에 사용
 		// 이는 kubectl apply의 last-applied-configuration과 유사한 동작입니다
 		if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(newService); err != nil {
-			log.FromContext(ctx).Error(err, "Unable to patch redisutils service with comparison object")
+			log.FromContext(ctx).Error(err, "Unable to patch redis service with comparison object")
 			return err
 		}
 		log.FromContext(ctx).V(1).Info("Syncing Redis service with defined properties")

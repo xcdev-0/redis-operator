@@ -9,7 +9,6 @@ import (
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
 	"github.com/xcdev-0/redis-operator/internal/envs"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -118,23 +117,6 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
-}
-
-func getService(ctx context.Context, client kubernetes.Interface, namespace string, name string) (*corev1.Service, error) {
-	serviceInfo, err := client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return serviceInfo, nil
-}
-
-func getServicePortByName(svc *corev1.Service, portName string) *corev1.ServicePort {
-	for i := range svc.Spec.Ports {
-		if svc.Spec.Ports[i].Name == portName {
-			return &svc.Spec.Ports[i]
-		}
-	}
-	return nil
 }
 
 func GetRedisPodIP(ctx context.Context, client kubernetes.Interface, redisInfo RedisDetails) string {

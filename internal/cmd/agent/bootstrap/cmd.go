@@ -8,7 +8,7 @@ import (
 func CMD() *cobra.Command {
 	bootstrapCmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Bootstrap do some init work before run redisutils",
+		Short: "Bootstrap performs init work before Redis starts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return redisbootstrap.GenerateConfig()
 		},

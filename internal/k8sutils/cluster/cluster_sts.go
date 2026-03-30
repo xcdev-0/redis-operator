@@ -11,6 +11,34 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+func buildRoleParams(role string, cr *rcvb2.RedisCluster) RedisClusterRoleParams {
+	var rs *rcvb2.RedisRoleSpec
+	switch role {
+	case "leader":
+		rs = &cr.Spec.RedisLeader.RedisRoleSpec
+	case "follower":
+		rs = &cr.Spec.RedisFollower.RedisRoleSpec
+	}
+
+	params := RedisClusterRoleParams{
+		Role:                          role,
+		Resources:                     cr.Spec.GetRedisResources(role),
+		ReplicaCounts:                 cr.Spec.GetReplicaCount(role),
+		ContainerSecurityContext:      rs.ContainerSecurityContext,
+		Affinity:                      rs.Affinity,
+		TerminationGracePeriodSeconds: rs.TerminationGracePeriodSeconds,
+		NodeSelector:                  rs.NodeSelector,
+		TopologySpreadConstraints:     rs.TopologySpreadConstraints,
+		Tolerations:                   rs.Tolerations,
+		ReadinessProbe:                rs.ReadinessProbe,
+		LivenessProbe:                 rs.LivenessProbe,
+	}
+	if redisConfig := cr.Spec.GetAdditionalRedisConfig(role); redisConfig != nil {
+		params.AdditionalRedisConfig = redisConfig
+	}
+	return params
+}
+
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 사용됩니다.
 // RedisClusterRoleParams는 Redis Cluster StatefulSet 생성을 위한 역할별(Leader/Follower) 차별화 파라미터를 담는 구조체입니다.
 // 이 구조체는 Leader와 Follower StatefulSet을 생성할 때 각각 다른 설정을 전달하기 위해 사용됩니다.
@@ -32,6 +60,14 @@ type RedisClusterRoleParams struct {
 	ContainerSecurityContext *corev1.SecurityContext      // 컨테이너 보안 컨텍스트 (Container.SecurityContext)
 	ReadinessProbe           *corev1.Probe                // Readiness Probe 설정 (컨테이너 준비 상태 확인)
 	LivenessProbe            *corev1.Probe                // Liveness Probe 설정 (컨테이너 생존 상태 확인)
+}
+
+func CreateRedisLeaderSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+	return buildRoleParams("leader", cr).CreateRedisClusterSTS(ctx, cr, cl)
+}
+
+func CreateRedisFollowerSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+	return buildRoleParams("follower", cr).CreateRedisClusterSTS(ctx, cr, cl)
 }
 
 func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSTS(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
@@ -56,7 +92,7 @@ func (redisClusterRoleParams RedisClusterRoleParams) CreateRedisClusterSTS(ctx c
 		return err
 	}
 
-	err = statefulset.CreateOrUpdateStateFul(
+	err = statefulset.CreateOrUpdateStatefulSet(
 		ctx,
 		cl,
 		&statefulset.STSCreateOrUpdateRequest{

@@ -20,10 +20,10 @@ timeout 0
 tcp-keepalive 300
 daemonize no
 supervised no
-pidfile /var/run/redisutils.pid
+pidfile /var/run/redis.pid
 `
 
-// GenerateConfig는 환경 변수를 읽어서 Redis 설정 파일(redisutils.conf)을 동적으로 생성합니다.
+// GenerateConfig는 환경 변수를 읽어서 Redis 설정 파일(redis.conf)을 동적으로 생성합니다.
 // 이 함수는 Init Container에서 실행되며, Pod가 시작되기 전에 Redis 설정을 준비합니다.
 func GenerateConfig() error {
 	cfg := agentutil.NewConfig("/etc/redis/redis.conf", defaultRedisConfig)

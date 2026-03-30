@@ -29,8 +29,7 @@ type StatefulSetService struct {
 	kubeClient kubernetes.Interface
 }
 
-// interface implementation
-// IsStatefulSet, GetStatefulSetReplicas
+// StatefulSet 인터페이스 구현체입니다.
 func (s *StatefulSetService) IsStatefulSetReady(ctx context.Context, namespace, name string) bool {
 	var (
 		partition = 0
@@ -90,7 +89,7 @@ func NewStatefulSetService(kubeClient kubernetes.Interface) *StatefulSetService 
 	}
 }
 
-// STSCreateOrUpdateRequest는 CreateOrUpdateStateFul 함수에 전달되는 모든 매개변수를 그룹화합니다.
+// STSCreateOrUpdateRequest는 CreateOrUpdateStatefulSet 함수에 전달되는 모든 매개변수를 그룹화합니다.
 type STSCreateOrUpdateRequest struct {
 	Namespace       string
 	StsObjectMeta   metav1.ObjectMeta
@@ -99,7 +98,7 @@ type STSCreateOrUpdateRequest struct {
 	ContainerParams ContainerParameters
 }
 
-func CreateOrUpdateStateFul(ctx context.Context,
+func CreateOrUpdateStatefulSet(ctx context.Context,
 	kubeClient kubernetes.Interface,
 	req *STSCreateOrUpdateRequest) error {
 	storedStateful, err := getStatefulSet(ctx, kubeClient, req.Namespace, req.StsObjectMeta.Name)
@@ -383,5 +382,5 @@ func findTargetVolumeClaimTemplate(templates []corev1.PersistentVolumeClaim) (in
 		}
 	}
 	// 대상 템플릿을 찾지 못한 경우 (VolumeClaimTemplate이 없거나 전부 "node-conf"인 경우)
-	return -1, nil
+	return -1, fmt.Errorf("resizable volume claim template not found")
 }

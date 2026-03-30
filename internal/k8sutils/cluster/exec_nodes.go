@@ -94,18 +94,6 @@ func GetClusterMasterNodeCount(ctx context.Context, client kubernetes.Interface,
 	})
 }
 
-func GetClusterHealthyMasterNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
-	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
-		return n.IsLeader() && !n.IsFailedOrDisconnected()
-	})
-}
-
-func GetClusterHealthyFollowerNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
-	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
-		return n.IsFollower() && !n.IsFailedOrDisconnected()
-	})
-}
-
 func GetClusterPendingNodeCount(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
 	return getClusterNodeCountByFilter(ctx, client, cr, func(n ClusterNode) bool {
 		return n.HasFlagType("handshake") || n.HasFlagType("noaddr")
@@ -234,6 +222,10 @@ func getRedisNodeID(
 	rd redisservice.RedisDetails,
 ) string {
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, rd.PodName)
+	if redisClient == nil {
+		log.FromContext(ctx).Error(nil, "Failed to configure Redis client", "Pod", rd.PodName)
+		return ""
+	}
 	defer redisClient.Close()
 
 	pong, err := redisClient.Ping(ctx).Result()
@@ -278,22 +270,6 @@ func getClusterSlotByNodeID(ctx context.Context, redisClient *redis.Client, node
 	return strconv.Itoa(totalSlots), nil
 }
 
-// Redis 명령어: CLUSTER SLAVES
-func getAttachedFollowerNodeIDs(ctx context.Context, redisClient *redis.Client, leaderNodeID string) []string {
-	followers, err := redisClient.ClusterSlaves(ctx, leaderNodeID).Result()
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to get attached follower node IDs", "masterNodeID", leaderNodeID)
-		return nil
-	}
-	followerIDs := make([]string, 0, len(followers))
-	for _, follower := range followers {
-		// <node-id> <ip:port@cport> <flags> <master-id> <ping> <pong> <epoch> <state>
-		followerIDs = append(followerIDs, strings.Split(follower, " ")[0])
-	}
-	log.FromContext(ctx).V(1).Info("Followers Nodes attached to", "node", leaderNodeID, "are", followerIDs)
-	return followerIDs
-}
-
 func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (int32, error) {
 	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
@@ -319,6 +295,9 @@ func UnhealthyNodesInCluster(ctx context.Context, client kubernetes.Interface, c
 // Redis 명령어: INFO replication
 func IsLeaderNode(ctx context.Context, k8sclient kubernetes.Interface, cr *rcvb2.RedisCluster, podName string) (bool, error) {
 	redisClient := redisservice.ConfigureRedisClient(ctx, k8sclient, cr, podName)
+	if redisClient == nil {
+		return false, fmt.Errorf("failed to configure redis client for pod %s", podName)
+	}
 	defer redisClient.Close()
 
 	info, err := redisClient.Info(ctx, "replication").Result()

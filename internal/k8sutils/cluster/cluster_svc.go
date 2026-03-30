@@ -23,6 +23,14 @@ type RedisClusterService struct {
 	role string // Service 역할 ("leader" 또는 "follower")
 }
 
+func CreateRedisLeaderService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+	return RedisClusterService{role: "leader"}.CreateRedisClusterService(ctx, cr, cl)
+}
+
+func CreateRedisFollowerService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+	return RedisClusterService{role: "follower"}.CreateRedisClusterService(ctx, cr, cl)
+}
+
 func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
 	stsName := k8smeta.GetStatefulSetName(cr.Name, rcs.role)
 	var epp k8smeta.ExporterPortProvider
@@ -48,7 +56,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	// 1 cluster ip, 2 headless, 3 master 서비스는 항상 생성
 
 	// 1. cluster ip
-	// svv name: stsName
+	// svc name: stsName
 	// 클러스터 IP 서비스는 쿠버네티스 내부 클라이언트가 사용하는 서비스입니다.
 	clusterIPObjectMeta := k8smeta.GenerateObjectMeta(&k8smeta.ObjectMeta{
 		Name:      stsName,
@@ -96,7 +104,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	}
 
 	// 2. headless service
-	// svv name: stsName + "-headless"
+	// svc name: stsName + "-headless"
 	// 헤드리스 서비스는 클러스터 내부 통신을 위해 사용됩니다.
 	headlessLabels := utilmaps.Copy(labels)
 	if cr.Spec.RedisExporter.IsEnabled() {
@@ -128,7 +136,7 @@ func (rcs RedisClusterService) CreateRedisClusterService(ctx context.Context, cr
 	}
 
 	// 3. master service
-	// svv name: cr.Name + "-master"
+	// svc name: cr.Name + "-master"
 	// 일반 Service는 StatefulSet 역할(leader/follower)을 기반으로 선택하지만,
 	// Master Service는 실제 Redis 역할(master/slave)을 기반으로 선택합니다.
 	// 따라서 redis-current-role: master 라벨을 사용하여 실제 master 역할을 하는 Pod를 선택합니다.
@@ -179,7 +187,7 @@ func (opts ServiceOptions) createOrUpdateService(ctx context.Context, serviceDef
 		if errors.IsNotFound(err) {
 			// Set last applied annotation for future comparisons
 			if err := patch.DefaultAnnotator.SetLastAppliedAnnotation(serviceDef); err != nil {
-				log.FromContext(ctx).Error(err, "Unable to patch redisutils service with compare annotations")
+				log.FromContext(ctx).Error(err, "Unable to patch redis service with compare annotations")
 			}
 			return createService(ctx, opts.K8sClient, opts.Namespace, serviceDef)
 		}
