@@ -23,6 +23,7 @@ go.work
 # editor and IDE paraphernalia
 .idea
 .vscode
+.DS_Store
 *.swp
 *.swo
 *~
