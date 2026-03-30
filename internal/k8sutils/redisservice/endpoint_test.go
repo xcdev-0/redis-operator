@@ -1,9 +1,6 @@
 package redisservice
 
-import (
-	"context"
-	"testing"
-)
+import "testing"
 
 func TestEndpointInfo_String(t *testing.T) {
 	tests := []struct {
@@ -56,70 +53,6 @@ func TestEndpointInfo_String(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("EndpointInfo.String() = %v, want %v", result, tt.expected)
 			}
-		})
-	}
-}
-
-func TestGetEndpoint_ErrorHandling(t *testing.T) {
-	// 이 테스트는 실제 Kubernetes 클러스터가 필요하므로
-	// 통합 테스트로 작성하거나 mock을 사용해야 합니다.
-	// 여기서는 기본적인 구조만 제공합니다.
-
-	_ = context.Background() // ctx 변수 사용하지 않으므로 무시
-
-	tests := []struct {
-		name        string
-		description string
-		// 실제 구현 시 Kubernetes client mock이 필요합니다
-	}{
-		{
-			name:        "nil Kubernetes client",
-			description: "Kubernetes client가 nil일 때 에러 처리",
-		},
-		{
-			name:        "존재하지 않는 Pod",
-			description: "Pod가 존재하지 않을 때 에러 처리",
-		},
-		{
-			name:        "Service 타입별 동작",
-			description: "서비스 타입과 무관하게 Pod 네트워크 엔드포인트를 사용",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Logf("Test case: %s - %s", tt.name, tt.description)
-			// TODO: Kubernetes client mock을 사용한 실제 테스트 구현
-		})
-	}
-}
-
-func TestGetEndPointIP_ErrorHandling(t *testing.T) {
-	// 이 테스트는 실제 Kubernetes 클러스터가 필요하므로
-	// 통합 테스트로 작성하거나 mock을 사용해야 합니다.
-	// 여기서는 기본적인 구조만 제공합니다.
-
-	_ = context.Background() // ctx 변수 사용하지 않으므로 무시
-
-	tests := []struct {
-		name        string
-		description string
-		// 실제 구현 시 Kubernetes client mock이 필요합니다
-	}{
-		{
-			name:        "IP만 반환",
-			description: "GetEndPointIP는 포트 없이 IP만 반환해야 함",
-		},
-		{
-			name:        "ClusterIP 타입에서 Pod IP 반환",
-			description: "Pod 네트워크 기반으로 Pod IP를 반환",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Logf("Test case: %s - %s", tt.name, tt.description)
-			// TODO: Kubernetes client mock을 사용한 실제 테스트 구현
 		})
 	}
 }

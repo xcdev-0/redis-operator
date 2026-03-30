@@ -157,12 +157,9 @@ func generateStatefulSetDef(
 
 	// 데이터 저장용 PVC 템플릿 설정
 	if containerParams.DataPersistenceEnabled {
-		// TODO: 이름 설정
-		// pvcTplName := util.CoalesceEnv1(consts.EnvOperatorSTSPVCTemplateName, consts.DataVolumeName)
 		statefulset.Spec.VolumeClaimTemplates = append(
 			statefulset.Spec.VolumeClaimTemplates,
 			createPVC(
-				// objectMeta.GetName(),
 				consts.VolumeNameData,
 				objectMeta,
 				stsParams.DataPVC))

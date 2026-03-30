@@ -1,9 +1,0 @@
-apiVersion: ejlabs.in/v1beta2
-kind: RedisCluster
-metadata:
-  labels:
-    app.kubernetes.io/name: redis
-    app.kubernetes.io/managed-by: kustomize
-  name: rediscluster-sample
-spec:
-  # TODO(user): Add fields here
