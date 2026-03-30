@@ -3,14 +3,11 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	rcvb2 "github.com/xcdev-0/redis-operator/api/v1beta2"
-	"github.com/xcdev-0/redis-operator/internal/k8sutils/consts"
 	k8smeta "github.com/xcdev-0/redis-operator/internal/k8sutils/k8smeta"
 	"github.com/xcdev-0/redis-operator/internal/k8sutils/statefulset"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -119,42 +116,7 @@ func generateStatefulSetParams(
 	if cr.Spec.IsNodePersistenceEnabled() {
 		stsParams.NodeConfPVC = cr.Spec.Storage.Node.PersistentVolumeClaim
 	}
-	// StatefulSet 재생성 어노테이션 확인
-	// 변경 불가능한 필드(VolumeClaimTemplate 등) 변경 시 StatefulSet을 재생성해야 합니다.
-	if value, found := cr.GetAnnotations()[consts.AnnotationKeyRecreateStatefulset]; found && value == "true" {
-		stsParams.RecreateStatefulSet = true
-		stsParams.RecreateStatefulsetStrategy = getDeletionPropagationStrategy(cr.GetAnnotations())
-	}
 	return stsParams
-}
-
-// getDeletionPropagationStrategy는 어노테이션을 기반으로 삭제 전파 전략을 반환합니다.
-// 삭제 전파 전략은 StatefulSet을 삭제할 때 자식 리소스(Pod, PVC 등)를 어떻게 처리할지 결정합니다.
-func getDeletionPropagationStrategy(annotations map[string]string) *metav1.DeletionPropagation {
-	if annotations == nil {
-		return nil
-	}
-
-	// 어노테이션에서 재생성 전략 확인
-	if strategy, exists := annotations[consts.AnnotationKeyRecreateStatefulsetStrategy]; exists {
-		var propagation metav1.DeletionPropagation
-
-		switch strings.ToLower(strategy) {
-		case "orphan":
-			// Orphan: StatefulSet만 삭제, 자식 리소스는 유지
-			propagation = metav1.DeletePropagationOrphan
-		case "background":
-			// Background: StatefulSet을 먼저 삭제, 자식 리소스는 백그라운드에서 삭제
-			propagation = metav1.DeletePropagationBackground
-		default:
-			// Foreground: 자식 리소스를 먼저 삭제한 후 StatefulSet 삭제 (기본값)
-			propagation = metav1.DeletePropagationForeground
-		}
-
-		return &propagation
-	}
-
-	return nil
 }
 
 // ========================================================

@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"emperror.dev/errors"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -121,12 +120,10 @@ func CreateOrUpdateStateFul(ctx context.Context,
 		return err
 	}
 	return patchStatefulSet(ctx, &PatchStatefulSetRequest{
-		StoredStateful:      storedStateful,
-		NewStateful:         statefulSetDef,
-		Namespace:           req.Namespace,
-		RecreateStatefulSet: req.StsParams.RecreateStatefulSet,
-		DeletionPropagation: req.StsParams.RecreateStatefulsetStrategy,
-		KubeClient:          kubeClient,
+		StoredStateful: storedStateful,
+		NewStateful:    statefulSetDef,
+		Namespace:      req.Namespace,
+		KubeClient:     kubeClient,
 	})
 }
 
@@ -151,12 +148,10 @@ func createStatefulSet(ctx context.Context, cl kubernetes.Interface, namespace s
 
 // PatchStatefulSetRequest는 StatefulSet 패치에 필요한 모든 파라미터를 담는 구조체입니다.
 type PatchStatefulSetRequest struct {
-	StoredStateful      *appsv1.StatefulSet         // 클러스터에 현재 저장된 StatefulSet
-	NewStateful         *appsv1.StatefulSet         // 새로 적용할 StatefulSet
-	Namespace           string                      // StatefulSet이 속한 네임스페이스
-	RecreateStatefulSet bool                        // 변경 불가능한 필드 변경 시 재생성 여부
-	DeletionPropagation *metav1.DeletionPropagation // StatefulSet 삭제 시 전파 전략 (Orphan/Background/Foreground)
-	KubeClient          kubernetes.Interface        // Kubernetes API 클라이언트
+	StoredStateful *appsv1.StatefulSet  // 클러스터에 현재 저장된 StatefulSet
+	NewStateful    *appsv1.StatefulSet  // 새로 적용할 StatefulSet
+	Namespace      string               // StatefulSet이 속한 네임스페이스
+	KubeClient     kubernetes.Interface // Kubernetes API 클라이언트
 }
 
 // patchStatefulSet은 StatefulSet을 업데이트하거나 재생성합니다.
@@ -177,25 +172,20 @@ func patchStatefulSet(ctx context.Context, req *PatchStatefulSetRequest) error {
 			return err
 		}
 
-		if !req.RecreateStatefulSet {
-
-			if req.NewStateful.Annotations == nil {
-				req.NewStateful.Annotations = make(map[string]string)
-			}
-
-			// Annotation을 원래 값으로 복원
-			req.NewStateful.Annotations[consts.AnnotationKeyStorageCapacity] = req.StoredStateful.Annotations[consts.AnnotationKeyStorageCapacity]
-
-			// VolumeClaimTemplate도 원래 값으로 복원 (immutable이므로)
-			req.NewStateful.Spec.VolumeClaimTemplates = req.StoredStateful.Spec.VolumeClaimTemplates
-
-			// 변경 시도가 있었지만 무시되었다는 것을 로그로 알림
-			if vctModified {
-				log.FromContext(ctx).V(1).Info("VolumeClaimTemplate change is being ignored because the field is immutable. Consider enabling recreating the statefulset option.")
-			}
+		if req.NewStateful.Annotations == nil {
+			req.NewStateful.Annotations = make(map[string]string)
 		}
-		// recreateStatefulSet이 true인 경우:
-		// StatefulSet을 삭제하고 다시 생성하므로 VolumeClaimTemplate 변경 가능
+
+		// Annotation을 원래 값으로 복원
+		req.NewStateful.Annotations[consts.AnnotationKeyStorageCapacity] = req.StoredStateful.Annotations[consts.AnnotationKeyStorageCapacity]
+
+		// VolumeClaimTemplate도 원래 값으로 복원 (immutable이므로)
+		req.NewStateful.Spec.VolumeClaimTemplates = req.StoredStateful.Spec.VolumeClaimTemplates
+
+		// 변경 시도가 있었지만 무시되었다는 것을 로그로 알림
+		if vctModified {
+			log.FromContext(ctx).V(1).Info("VolumeClaimTemplate change is being ignored because the field is immutable.")
+		}
 	}
 
 	// Calculate the patch between the stored and new objects, ignoring immutable or unnecessary fields.
@@ -226,12 +216,10 @@ func patchStatefulSet(ctx context.Context, req *PatchStatefulSetRequest) error {
 		return err
 	}
 
-	return updateOrDeleteStatefulSet(ctx, &UpdateStatefulSetRequest{
-		Stateful:            req.NewStateful,
-		Namespace:           req.Namespace,
-		RecreateStatefulSet: req.RecreateStatefulSet,
-		DeletionPropagation: req.DeletionPropagation,
-		KubeClient:          req.KubeClient,
+	return updateStatefulSet(ctx, &UpdateStatefulSetRequest{
+		Stateful:   req.NewStateful,
+		Namespace:  req.Namespace,
+		KubeClient: req.KubeClient,
 	})
 }
 
@@ -261,34 +249,13 @@ func mergeAnnotations(stored, new *appsv1.StatefulSet) {
 
 // UpdateStatefulSetRequest는 StatefulSet 업데이트에 필요한 파라미터를 담는 구조체입니다.
 type UpdateStatefulSetRequest struct {
-	Stateful            *appsv1.StatefulSet         // 업데이트할 StatefulSet
-	Namespace           string                      // StatefulSet이 속한 네임스페이스
-	RecreateStatefulSet bool                        // 업데이트 실패 시 재생성 여부
-	DeletionPropagation *metav1.DeletionPropagation // 삭제 전파 전략
-	KubeClient          kubernetes.Interface        // Kubernetes API 클라이언트
+	Stateful   *appsv1.StatefulSet  // 업데이트할 StatefulSet
+	Namespace  string               // StatefulSet이 속한 네임스페이스
+	KubeClient kubernetes.Interface // Kubernetes API 클라이언트
 }
 
-func updateOrDeleteStatefulSet(ctx context.Context, req *UpdateStatefulSetRequest) error {
+func updateStatefulSet(ctx context.Context, req *UpdateStatefulSetRequest) error {
 	_, err := req.KubeClient.AppsV1().StatefulSets(req.Namespace).Update(ctx, req.Stateful, metav1.UpdateOptions{})
-	if req.RecreateStatefulSet {
-		var sErr *apierrors.StatusError
-		// sts 재생성 활성화되었고,  vct 변경 시도가 있었을 경우 원래 sts를 삭제함
-		// 다음 reconcile에서 스테이트풀 셋을 재생성해줌
-		if errors.As(err, &sErr) && sErr.ErrStatus.Code == 422 && sErr.ErrStatus.Reason == metav1.StatusReasonInvalid {
-			failMsg := make([]string, len(sErr.ErrStatus.Details.Causes))
-			for messageCount, cause := range sErr.ErrStatus.Details.Causes {
-				failMsg[messageCount] = cause.Message
-			}
-			log.FromContext(ctx).V(1).Info("recreating StatefulSet because the update operation wasn't possible", "reason", strings.Join(failMsg, ", "))
-			if err := req.KubeClient.AppsV1().StatefulSets(req.Namespace).Delete(
-				ctx,
-				req.Stateful.GetName(),
-				metav1.DeleteOptions{PropagationPolicy: req.DeletionPropagation}); err != nil { //nolint:gocritic
-				return errors.Wrap(err, "failed to delete StatefulSet to avoid forbidden action")
-			}
-			return nil
-		}
-	}
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Redis statefulset update failed")
 		return err

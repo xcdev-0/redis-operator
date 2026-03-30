@@ -5,9 +5,7 @@ const (
 )
 
 const (
-	AnnotationKeyRecreateStatefulset         = "redis.ejlabs.in/recreate-statefulset"
-	AnnotationKeyRecreateStatefulsetStrategy = "redis.ejlabs.in/recreate-statefulset-strategy"
-	AnnotationKeyStorageCapacity             = "storageCapacity"
+	AnnotationKeyStorageCapacity = "storageCapacity"
 )
 
 const (

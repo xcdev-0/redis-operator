@@ -30,8 +30,6 @@ type StatefulSetParameters struct {
 	ImagePullSecrets              *[]corev1.LocalObjectReference // 이미지 풀 시크릿 (프라이빗 레지스트리용)
 	ServiceAccountName            *string                        // Pod에 사용할 ServiceAccount 이름
 	UpdateStrategy                appsv1.StatefulSetUpdateStrategy
-	RecreateStatefulSet           bool
-	RecreateStatefulsetStrategy   *metav1.DeletionPropagation
 	TerminationGracePeriodSeconds *int64
 	MinReadySeconds               int32
 }
