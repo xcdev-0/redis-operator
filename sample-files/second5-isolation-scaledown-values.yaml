@@ -1,0 +1,49 @@
+redisCluster:
+  enabled: true
+  name: second5
+  spec:
+    clusterSize: 4
+    clusterVersion: v7
+    TLS: null
+    storage:
+      node:
+        enabled: true
+        persistentVolumeClaim:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 50Mi
+      data:
+        enabled: true
+        persistentVolumeClaim:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 200Mi
+    kubernetesConfig:
+      image: redis:7.2-alpine
+      imagePullPolicy: IfNotPresent
+      redisSecret: null
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+    redisExporter:
+      enabled: false
+      image: oliver006/redis_exporter:latest
+      imagePullPolicy: IfNotPresent
+      port: 9121
+      env: []
+
+serviceMonitor:
+  enabled: false
+
+prometheusRule:
+  enabled: false

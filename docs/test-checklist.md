@@ -32,6 +32,7 @@
 ### 2.1 Pod Failure
 - [x] Kill a leader pod -> verify Redis auto-failover promotes follower
 - [x] Kill a follower pod -> verify it rejoins cluster after restart
+- [x] Write keys before leader failure and verify reads after promotion/rejoin
 
 ### 2.2 Pod Restart with IP Change
 - [x] Delete a pod (StatefulSet recreates it with new IP)
@@ -52,39 +53,30 @@
 - [x] Verify redis-cli commands include `-a <password>`
 - [x] Verify exporter connects with password
 - [x] Verify health probes use password
+- [x] Verify password auth does not break Redis exporter sidecar startup
 
 ### 4.2 TLS
 - [x] Create cluster with TLS config (ca.crt, tls.crt, tls.key)
 - [x] Verify Redis starts with TLS enabled
 - [x] Verify cluster bus uses TLS
 - [x] Verify redis-cli commands include `--tls --cert --key --cacert`
-
----
-
-## 5. Configuration
-
-### 5.1 Redis Config
-- [ ] Set `maxMemoryPercentOfLimit` -> verify `maxmemory` is calculated correctly
-- [ ] Apply `additionalRedisConfig` via ConfigMap -> verify settings applied
-
-### 5.2 Resource Limits
-- [ ] Verify container resource requests/limits match CR spec
-- [ ] Verify role-specific resources (leader vs follower) if set differently
+- [x] Verify exporter TLS environment is rendered (`REDIS_ADDR=rediss://...`, TLS cert paths)
+- [x] Verify Prometheus targets remain `up` after TLS is enabled
 
 ---
 
 ## 6. Monitoring
 
-### 6.1 Redis Exporter
-- [ ] Enable exporter -> verify sidecar container is injected
-- [ ] Verify exporter port (default 9121) is exposed
-- [ ] Curl `localhost:9121/metrics` inside pod -> verify Prometheus metrics
-- [ ] Verify exporter custom environment variables are set
+### 6.1 Redis Exporter + Prometheus
+- [x] Enable exporter -> verify sidecar container is injected
+- [x] Verify headless Services expose exporter port (default `9121`)
+- [x] Verify headless Services carry `redis.ej.com/metrics-scrape=true`
+- [x] Verify `ServiceMonitor` is created in `monitoring` namespace
+- [x] Verify `PrometheusRule` is created for Redis alerts
+- [x] Verify Prometheus targets for leader/follower headless Services are `up`
+- [x] Query Redis metrics in Prometheus (`redis_cluster_connections`)
+- [x] Verify exporter custom environment variables are rendered
 
----
-
-## 7. Service Configuration
-
-### 7.1 Service Types
-- [ ] ClusterIP (default) -> verify internal access
-- [ ] Verify headless service for StatefulSet DNS
+### 6.2 Operator Metrics
+- [x] Verify controller-manager metrics Service is scraped by Prometheus
+- [x] Add Helm-managed `ServiceMonitor` or equivalent scrape config for operator metrics

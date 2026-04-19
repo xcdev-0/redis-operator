@@ -1,0 +1,28 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "redis-operator.fullname" . }}-controller-manager-metrics-servicemonitor
+  namespace: {{ .Values.serviceMonitor.namespace }}
+  labels:
+    control-plane: controller-manager
+    {{- include "redis-operator.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      {{- include "redis-operator.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    {{- toYaml .Values.serviceMonitor.namespaceSelector | nindent 4 }}
+  endpoints:
+    - port: {{ .Values.serviceMonitor.port }}
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+      scheme: {{ .Values.serviceMonitor.scheme }}
+      bearerTokenFile: {{ .Values.serviceMonitor.bearerTokenFile }}
+      tlsConfig:
+        {{- toYaml .Values.serviceMonitor.tlsConfig | nindent 8 }}
+{{- end }}

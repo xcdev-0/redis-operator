@@ -1,6 +1,6 @@
 # 1-2-2 Downscale Guard Test (4 -> 3, overflow ordinal isolation)
 
-테스트 일시: `2026-02-15 (UTC)` / `2026-02-16 (KST)`  
+테스트 일시: `2026-04-19 (KST)`  
 네임스페이스/리소스: `default/second5`
 
 ## 목적
@@ -15,25 +15,70 @@
 - 테스트 키 입력:
   - prefix: `predown:*`
   - count: `100` (`predown:1` ~ `predown:100`)
+- 전제:
+  - 클러스터에 NetworkPolicy 구현체(Calico, Cilium 등)가 활성화되어 있어야 함
+
+## 격리용 NetworkPolicy
+overflow ordinal 3만 격리하기 위해 아래 정책을 사용했습니다.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: second5-overflow-ordinal-isolation
+  namespace: default
+spec:
+  podSelector:
+    matchExpressions:
+      - key: statefulset.kubernetes.io/pod-name
+        operator: In
+        values:
+          - second5-leader-3
+          - second5-follower-3
+  policyTypes:
+    - Ingress
+    - Egress
+```
 
 ## 재현 절차
-1. overflow ordinal 3 격리용 NetworkPolicy 적용
-2. `leader-0`에서 `leader-3`로의 `6379`, `16379` 연결 타임아웃 확인
-3. 다운스케일 요청: `spec.clusterSize 4 -> 3`
-4. unhealthy 가드로 downscale 정리 보류 확인
-5. 격리 NetworkPolicy 삭제
-6. cleanup/reshard/del-node 재개 후 STS 축소 완료 확인
-7. 데이터 무결성 검증
+1. `charts/redis-cluster`로 `second5(clusterSize=4)` 설치
+2. NetworkPolicy 적용
+3. `CLUSTER NODES` 또는 컨트롤러 로그에서 `leader-3`, `follower-3`가 unhealthy로 전환되는지 확인
+4. 다운스케일 요청: `spec.clusterSize 4 -> 3`
+5. unhealthy 가드로 downscale 정리 보류 확인
+6. NetworkPolicy 삭제
+7. cleanup/reshard/del-node 재개 후 STS 축소 완료 확인
+8. 데이터 무결성 검증
+
+실행 명령 예시:
+
+```bash
+helm upgrade --install second5 ./charts/redis-cluster \
+  -n default \
+  -f sample-files/second5-isolation-scaledown-values.yaml
+
+kubectl apply -f /tmp/second5-overflow-ordinal-isolation.yaml
+
+kubectl exec -n default second5-leader-0 -c redis -- \
+  redis-cli cluster nodes
+
+kubectl patch rediscluster second5 -n default --type merge \
+  -p '{"spec":{"clusterSize":3}}'
+
+kubectl logs -n default deploy/rediscluster-controller-manager -c manager --tail=200 -f
+
+kubectl delete networkpolicy second5-overflow-ordinal-isolation -n default
+```
 
 ## 핵심 관찰 결과
 ### 1) unhealthy 가드 동작 확인
 격리 상태에서 컨트롤러 로그:
 
 ```text
-cluster has unhealthy nodes, delaying membership change
-Action="leader downscale cleanup", Unhealthy.Node.Count=1
-cluster has unhealthy nodes, delaying membership change
-Action="leader downscale cleanup", Unhealthy.Node.Count=2
+failed to check redis role, skipping pod ... second5-follower-3 ... i/o timeout
+failed to check redis role, skipping pod ... second5-leader-3 ... i/o timeout
+overflow ordinal still joined in cluster membership
+downscale cleanup is not completed yet; delaying StatefulSet replica reconcile
 ```
 
 동일 시점 상태:
@@ -73,10 +118,10 @@ predown:100=v100
 마스터별 `dbsize` 합계:
 
 ```text
-10.244.120.88:6379 dbsize=34
-10.244.120.84:6379 dbsize=31
-10.244.120.65:6379 dbsize=35
-total_master_dbsize=100
+second5-leader-0 dbsize=28
+second5-leader-1 dbsize=37
+second5-leader-2 dbsize=35
+sum=100
 ```
 
 ## 결론

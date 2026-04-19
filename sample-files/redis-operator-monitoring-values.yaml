@@ -1,0 +1,15 @@
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  port: http
+  interval: 30s
+  path: /metrics
+  scheme: http
+  bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  additionalLabels:
+    release: prometheus
+  namespaceSelector:
+    matchNames:
+      - default
+  tlsConfig:
+    insecureSkipVerify: true

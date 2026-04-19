@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: second5-overflow-ordinal-isolation
+  namespace: default
+spec:
+  podSelector:
+    matchExpressions:
+      - key: statefulset.kubernetes.io/pod-name
+        operator: In
+        values:
+          - second5-leader-3
+          - second5-follower-3
+  policyTypes:
+    - Ingress
+    - Egress

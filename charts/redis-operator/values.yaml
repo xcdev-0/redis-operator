@@ -38,11 +38,26 @@ controllerManager:
 kubernetesClusterDomain: cluster.local
 metricsService:
   ports:
-  - name: https
+  - name: http
     port: 8443
     protocol: TCP
     targetPort: 8443
   type: ClusterIP
+serviceMonitor:
+  enabled: false
+  namespace: monitoring
+  port: http
+  interval: 30s
+  path: /metrics
+  scheme: http
+  bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  additionalLabels:
+    release: prometheus
+  namespaceSelector:
+    matchNames:
+    - default
+  tlsConfig:
+    insecureSkipVerify: true
 serviceAccount:
   annotations: {}
   automount: true

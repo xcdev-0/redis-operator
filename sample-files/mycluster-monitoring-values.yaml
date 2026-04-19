@@ -1,0 +1,36 @@
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  labels:
+    release: prometheus
+    monitoring.ejlabs.in/target: redis
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      redis.ej.com/metrics-scrape: "true"
+  endpoints:
+    port: redis-exporter
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: true
+
+prometheusRule:
+  enabled: true
+  namespace: default
+  labels:
+    release: prometheus
+    monitoring.ejlabs.in/target: redis
+  annotations: {}
+  for:
+    redisDown: 2m
+    clusterStateFail: 5m
+    memoryUsageHigh: 10m
+    rejectedConnectionsHigh: 5m
+    evictedKeysHigh: 10m
+  thresholds:
+    memoryUsagePercent: 90
+    rejectedConnectionsIncrease: 0
+    evictedKeysIncrease: 0

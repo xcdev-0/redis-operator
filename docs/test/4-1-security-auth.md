@@ -1,11 +1,12 @@
 # 4-1 Security Auth Test (Password + TLS)
 
-테스트 일시: `2026-02-18`  
+테스트 일시: `2026-04-19 (KST)`  
 네임스페이스/리소스: `default/mycluster`
 
 ## 목적
 - 비밀번호 인증(`redisSecret`)이 정상 동작하는지 확인
 - TLS 설정(`spec.TLS`)이 정상 동작하는지 확인
+- 인증 정보 적용 후 exporter/probe 경로가 함께 유지되는지 확인
 
 ## 사전 조건
 - 비밀번호 Secret: `redis-password-secret` (`password` 키)
@@ -14,23 +15,17 @@
 - `RedisCluster.spec.TLS` 설정 완료
 
 ### TLS 인증서/Secret 생성 (테스트용 self-signed)
-아래처럼 self-signed 인증서를 만든 뒤 Kubernetes Secret으로 등록했습니다.
+이번 검증에서는 repo 내 스크립트를 사용해 self-signed 인증서를 만들고 Secret으로 등록했습니다.
 
 ```bash
-openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 365 \
-  -keyout /tmp/redis-tls.key -out /tmp/redis-tls.crt \
-  -subj "/CN=redis-cluster"
+kubectl apply -f sample-files/redis-password-secret.yaml
 
-kubectl create secret generic redis-tls-secret -n default \
-  --from-file=ca.crt=/tmp/redis-tls.crt \
-  --from-file=tls.crt=/tmp/redis-tls.crt \
-  --from-file=tls.key=/tmp/redis-tls.key \
-  --dry-run=client -o yaml | kubectl apply -f -
+./sample-files/create-redis-tls-secret.sh default redis-tls-secret redis-cluster
 ```
 
 검증:
 ```bash
-kubectl get secret redis-tls-secret -n default
+kubectl get secret redis-password-secret redis-tls-secret -n default
 ```
 
 ### 인증서 검증 방식 정리 (이번 테스트 vs 운영)
@@ -45,12 +40,38 @@ kubectl get secret redis-tls-secret -n default
   - 서버는 인증서를 클라이언트에 제시하고, 클라이언트는 `--cacert`로 서버 체인을 검증합니다.
   - 현재 설정(`tls-auth-clients optional`)에서는 mTLS가 아니므로 클라이언트 인증서(`--cert/--key`)는 필수가 아닙니다.
 
+## 테스트 클러스터 배포
+
+Helm values:
+- `sample-files/mycluster-security-auth-values.yaml`
+
+배포:
+
+```bash
+helm upgrade --install mycluster ./charts/redis-cluster \
+  -n default \
+  -f sample-files/mycluster-security-auth-values.yaml
+```
+
+최종 상태:
+
+```bash
+kubectl get rediscluster mycluster -n default -o wide
+```
+
+출력:
+
+```text
+NAME        CLUSTERSIZE   READYLEADERREPLICAS   READYFOLLOWERREPLICAS   STATE   AGE   REASON
+mycluster   3             3                     3                       Ready   ...   RedisCluster is ready
+```
+
 ## 4.1 Password 인증 검증
 
 ### 1) 무인증 접속 실패 확인
 ```bash
 kubectl exec -n default mycluster-leader-0 -c redis -- \
-  redis-cli -h localhost -p 6379 ping
+  redis-cli -h localhost -p 6379 --tls --cacert /tls/ca.crt ping
 ```
 
 결과:
@@ -61,7 +82,8 @@ NOAUTH Authentication required.
 ### 2) 비밀번호 인증 성공 확인
 ```bash
 kubectl exec -n default mycluster-leader-0 -c redis -- \
-  redis-cli -h localhost -p 6379 -a password ping
+  redis-cli -h localhost -p 6379 -a password \
+  --tls --cacert /tls/ca.crt ping
 ```
 
 결과:
@@ -72,6 +94,30 @@ PONG
 ### 3) Probe/Exporter 비밀번호 주입 확인
 - readiness/liveness probe 명령에 `-a ${REDIS_PASSWORD}` 포함 확인
 - exporter env에 `REDIS_PASSWORD`가 `redis-password-secret/password`에서 주입되는 것 확인
+- exporter 로그에 `NOAUTH`, `WRONGPASS`가 발생하지 않는 것 확인
+
+실제 probe 명령:
+
+```text
+["sh","-c","redis-cli -h $(hostname) -p ${REDIS_PORT} -a ${REDIS_PASSWORD} --tls --cert ${REDIS_TLS_CERT} --key ${REDIS_TLS_KEY} --cacert ${REDIS_TLS_CA_CERT} ping"]
+```
+
+exporter env 확인:
+
+```text
+REDIS_ADDR=rediss://localhost:6379
+REDIS_EXPORTER_SKIP_TLS_VERIFICATION=true
+REDIS_EXPORTER_TLS_CA_CERT_FILE=/tls/ca.crt
+REDIS_EXPORTER_TLS_CLIENT_CERT_FILE=/tls/tls.crt
+REDIS_EXPORTER_TLS_CLIENT_KEY_FILE=/tls/tls.key
+REDIS_PASSWORD secret=redis-password-secret key=password
+```
+
+exporter 로그:
+
+```text
+Providing metrics at :9121/metrics
+```
 
 ## 4.2 TLS 검증
 
@@ -96,6 +142,17 @@ port 0
 tls-port 6379
 ```
 
+### 2-1) Exporter TLS 환경 확인
+Redis exporter도 TLS Redis에 붙을 수 있도록 아래 환경 변수가 렌더되는 것을 확인했습니다.
+
+```text
+REDIS_ADDR=rediss://localhost:6379
+REDIS_EXPORTER_TLS_CLIENT_CERT_FILE=/tls/tls.crt
+REDIS_EXPORTER_TLS_CLIENT_KEY_FILE=/tls/tls.key
+REDIS_EXPORTER_TLS_CA_CERT_FILE=/tls/ca.crt
+REDIS_EXPORTER_SKIP_TLS_VERIFICATION=true
+```
+
 ### 3) TLS redis-cli 인증 성공
 ```bash
 kubectl exec -n default mycluster-leader-0 -c redis -- \
@@ -116,7 +173,7 @@ PONG
 TLS 적용 후 `6379`는 TLS 포트이므로, 평문 접속은 실패하는 것이 정상:
 
 ```bash
-kubectl exec -it -n default mycluster-leader-0 -c redis -- \
+kubectl exec -n default mycluster-leader-0 -c redis -- \
   redis-cli -p 6379 -a password
 ```
 
@@ -126,7 +183,14 @@ I/O error
 Error: Connection reset by peer
 ```
 
+## 연계 확인 포인트
+- 비밀번호/TLS 적용 이후 exporter sidecar가 계속 떠 있어야 함
+- `docs/test/6-1-monitoring.md` 기준으로 TLS 적용 후에도 Prometheus target `6/6 up`을 확인함
+- 즉 password + TLS 설정이 exporter scrape 경로를 깨뜨리지 않음을 검증함
+
 ## 최종 판정
 - 비밀번호 인증: **성공**
 - TLS 인증: **성공**
 - TLS 모드에서 평문 접속 거부: **정상 동작**
+- exporter/probe 경로 유지: **성공**
+- TLS 적용 후 Prometheus scrape 유지: **성공**

@@ -1,0 +1,70 @@
+redisCluster:
+  enabled: true
+  name: "mycluster"
+  namespace: ""
+  labels: {}
+  annotations: {}
+  spec:
+    clusterSize: 3
+    clusterVersion: v7
+    TLS:
+      secret:
+        secretName: redis-tls-secret
+      caKey: ca.crt
+      certKey: tls.crt
+      keyKey: tls.key
+
+    storage:
+      node:
+        enabled: true
+        persistentVolumeClaim:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 50Mi
+      data:
+        enabled: true
+        persistentVolumeClaim:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 200Mi
+
+    redisLeader:
+      redisConfig: {}
+      containerSecurityContext:
+
+    redisFollower:
+      redisConfig: {}
+      containerSecurityContext:
+
+    kubernetesConfig:
+      image: redis:7.2-alpine
+      imagePullPolicy: IfNotPresent
+      redisSecret:
+        name: redis-password-secret
+        key: password
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    redisExporter:
+      enabled: true
+      image: oliver006/redis_exporter:latest
+      imagePullPolicy: IfNotPresent
+      port: 9121
+      env: []
+
+serviceMonitor:
+  enabled: false
+
+prometheusRule:
+  enabled: false
