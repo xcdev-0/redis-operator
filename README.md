@@ -112,3 +112,8 @@ kubectl exec -n default mycluster-leader-0 -c redis -- redis-cli cluster nodes
 - CRD 정의: [config/crd/bases/ejlabs.in_redisclusters.yaml](./config/crd/bases/ejlabs.in_redisclusters.yaml)
 - RedisCluster 타입: [api/v1beta2/rediscluster_types.go](./api/v1beta2/rediscluster_types.go)
 - 메인 컨트롤러: [internal/controller/rediscluster_controller.go](./internal/controller/rediscluster_controller.go)
+
+## References
+
+- [OT-CONTAINER-KIT/redis-operator](https://github.com/OT-CONTAINER-KIT/redis-operator)
+  - Redis Operator의 리소스 구성과 운영 방식을 참고했습니다.
