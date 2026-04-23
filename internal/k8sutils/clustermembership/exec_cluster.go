@@ -530,18 +530,31 @@ func getPodIP(ctx context.Context, client kubernetes.Interface, namespace, podNa
 }
 
 func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) {
+	emptyMasterExists, err := HasEmptyMaster(ctx, client, cr)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to detect empty master, skipping rebalance")
+		return
+	}
+	if !emptyMasterExists {
+		return
+	}
+
+	if err := RebalanceRedisClusterEmptyMasters(ctx, client, cr); err != nil {
+		log.FromContext(ctx).Error(err, "failed to rebalance empty masters")
+	}
+}
+
+func HasEmptyMaster(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) (bool, error) {
 	executionPodName := k8smeta.GetExecutionPodName(cr.Name)
 	redisClient := redisservice.ConfigureRedisClient(ctx, client, cr, executionPodName)
 	if redisClient == nil {
-		log.FromContext(ctx).Error(nil, "failed to configure redis client", "Pod", executionPodName)
-		return
+		return false, fmt.Errorf("failed to configure redis client for %s", executionPodName)
 	}
 	defer redisClient.Close()
 
 	clusterNodes, err := getClusterNodesWithFallback(ctx, client, cr)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to get cluster nodes, skipping empty master check")
-		return
+		return false, fmt.Errorf("failed to get cluster nodes: %w", err)
 	}
 
 	for _, node := range clusterNodes {
@@ -552,18 +565,16 @@ func RebalanceIfEmptyMasterExists(ctx context.Context, client kubernetes.Interfa
 
 		podSlots, err := getClusterSlotByNodeID(ctx, redisClient, node.NodeID)
 		if err != nil {
-			log.FromContext(ctx).Error(err, "failed to get cluster slots", "nodeID", node.NodeID)
-			continue
+			return false, fmt.Errorf("failed to get cluster slots for node %s: %w", node.NodeID, err)
 		}
 
 		if podSlots == "0" || podSlots == "" {
 			log.FromContext(ctx).V(1).Info("Found Empty Redis Leader Node", "nodeID", node.NodeID, "address", node.address)
-			if err := RebalanceRedisClusterEmptyMasters(ctx, client, cr); err != nil {
-				log.FromContext(ctx).Error(err, "failed to rebalance empty masters")
-			}
-			break
+			return true, nil
 		}
 	}
+
+	return false, nil
 }
 
 func RedisClusterStatusHealth(ctx context.Context, client kubernetes.Interface, cr *rcvb2.RedisCluster) bool {

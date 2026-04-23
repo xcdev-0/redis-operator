@@ -706,7 +706,6 @@ spec:
                 description: ===== Redis 설정 =====
                 properties:
                   additionalRedisConfig:
-                    description: Additional Redis ConfigMap name
                     type: string
                   maxMemoryPercentOfLimit:
                     maximum: 100
@@ -2589,7 +2588,6 @@ spec:
                     description: ===== Redis 설정 =====
                     properties:
                       additionalRedisConfig:
-                        description: Additional Redis ConfigMap name
                         type: string
                       maxMemoryPercentOfLimit:
                         maximum: 100
@@ -2597,8 +2595,7 @@ spec:
                         type: integer
                     type: object
                   resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
+                    description: ===== 기본 설정 =====
                     properties:
                       claims:
                         description: |-
@@ -4317,7 +4314,6 @@ spec:
                     description: ===== Redis 설정 =====
                     properties:
                       additionalRedisConfig:
-                        description: Additional Redis ConfigMap name
                         type: string
                       maxMemoryPercentOfLimit:
                         maximum: 100
@@ -4325,8 +4321,7 @@ spec:
                         type: integer
                     type: object
                   resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
+                    description: ===== 기본 설정 =====
                     properties:
                       claims:
                         description: |-

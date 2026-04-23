@@ -37,18 +37,10 @@ redisCluster:
     redisLeader:
       redisConfig: {}
       containerSecurityContext:
-        capabilities:
-          add:
-            - NET_ADMIN
-            - NET_RAW
 
     redisFollower:
       redisConfig: {}
       containerSecurityContext:
-        capabilities:
-          add:
-            - NET_ADMIN
-            - NET_RAW
 
     kubernetesConfig:
       image: redis:7.2-alpine

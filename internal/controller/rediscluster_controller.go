@@ -382,10 +382,11 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to add leader node to cluster")
 				return requeueResult, true, requeueErr
 			}
-			if err := clustermembership.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
-				requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance empty masters")
-				return requeueResult, true, requeueErr
-			}
+			requeueResult, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10,
+				"waiting for leader node gossip convergence after add-node",
+				"Desired.Leader.Count", plan.desiredLeaderReplicas,
+				"Joined.Leader.Pods", joinedLeaderPodCount)
+			return requeueResult, true, requeueErr
 		} else {
 			logger.Info("leader master count mismatch without unjoined leader pods; waiting for convergence",
 				"Leaders.Count", leaderNodeCount,
@@ -393,6 +394,26 @@ func (r *RedisClusterReconciler) reconcileClusterMembership(ctx context.Context,
 				"Instance.Size", plan.desiredLeaderReplicas)
 		}
 		return ctrl.Result{}, false, nil
+	}
+
+	emptyMasterExists, err := clustermembership.HasEmptyMaster(ctx, r.K8sClient, cr)
+	if err != nil {
+		requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to detect empty master before follower replication")
+		return requeueResult, true, requeueErr
+	}
+	if emptyMasterExists {
+		stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "empty master rebalance")
+		if err != nil || !stable {
+			return result, true, err
+		}
+		if err := clustermembership.RebalanceRedisClusterEmptyMasters(ctx, r.K8sClient, cr); err != nil {
+			requeueResult, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance empty masters")
+			return requeueResult, true, requeueErr
+		}
+		requeueResult, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10,
+			"waiting for empty-master rebalance convergence",
+			"Desired.Leader.Count", plan.desiredLeaderReplicas)
+		return requeueResult, true, requeueErr
 	}
 
 	stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "follower replication")
