@@ -49,22 +49,47 @@ func (s *StatefulSetService) IsStatefulSetReady(ctx context.Context, namespace, 
 		replicas = int(*sts.Spec.Replicas)
 	}
 
-	// expectedUpdateReplicas: 새 revision으로 바뀐 Pod 수만 말해줌
-	// 그 Pod들이 Ready인지, 혹은 새 Pod가 실제로 Service endpoints로 들어갔는지는 별개
+	// StatefulSet 준비 상태는 Redis Cluster membership 변경 전에 확인합니다.
+	// reshard, del-node, rebalance 같은 작업은 StatefulSet 뒤의 Pod들이
+	// redis-cli 명령에 응답할 수 있고 안정적인 cluster view를 보여준다는
+	// 전제가 있어야 안전하게 실행할 수 있습니다.
+	//
+	// UpdatedReplicas는 UpdateRevision으로 실행 중인 Pod 개수입니다.
+	// RollingUpdate partition이 있으면 ordinal >= partition인 Pod만 새 revision으로
+	// 이동해야 하므로 기대 개수는 replicas - partition입니다.
+	//
+	// 보강 포인트:
+	// 현재 검사는 StatefulSet status를 신뢰하고 업데이트된 Pod 개수만 확인합니다.
+	// 특히 partition이 1 이상이면 이전 revision과 새 revision이 의도적으로 섞일 수 있으므로,
+	// CurrentRevision == UpdateRevision 조건을 강제할 수 없습니다.
+	// 더 엄밀하게 보려면 이 StatefulSet이 소유한 Pod 목록을 조회하고 ordinal을 파싱한 뒤,
+	// ordinal < partition인 Pod은 이전 revision이어도 허용하고,
+	// ordinal >= partition인 모든 Pod의 controller-revision-hash 라벨이
+	// sts.Status.UpdateRevision과 같은지 확인할 수 있습니다.
 	if expectedUpdateReplicas := replicas - partition; sts.Status.UpdatedReplicas < int32(expectedUpdateReplicas) {
 		log.FromContext(ctx).V(1).Info("StatefulSet is not ready", "Status.UpdatedReplicas", sts.Status.UpdatedReplicas, "ExpectedUpdateReplicas", expectedUpdateReplicas)
 		return false
 	}
 
+	// partition이 0이면 모든 Pod가 최신 desired template revision으로 수렴해야 합니다.
+	// 이때 CurrentRevision과 UpdateRevision이 다르면 일부 Pod가 아직 이전 revision일 수 있으므로
+	// Redis membership 변경을 수행하기에 안전한 상태가 아닙니다.
+	//
+	// partition이 0이 아니면 이전 revision과 새 revision이 의도적으로 공존할 수 있습니다.
+	// 따라서 이 경우 CurrentRevision과 UpdateRevision이 달라도 곧바로 비정상으로 보지는 않습니다.
 	if partition == 0 && sts.Status.CurrentRevision != sts.Status.UpdateRevision {
 		log.FromContext(ctx).V(1).Info("StatefulSet is not ready", "Status.CurrentRevision", sts.Status.CurrentRevision, "Status.UpdateRevision", sts.Status.UpdateRevision)
 		return false
 	}
 
+	// Generation은 사용자가 원하는 spec 버전이고, ObservedGeneration은
+	// StatefulSet controller가 처리한 최신 spec 버전입니다. 둘이 다르면
 	if sts.Status.ObservedGeneration != sts.Generation {
 		log.FromContext(ctx).V(1).Info("StatefulSet is not ready", "Status.ObservedGeneration", sts.Status.ObservedGeneration, "Generation", sts.Generation)
 		return false
 	}
+	// UpdatedReplicas는 Pod가 어떤 revision으로 실행 중인지만 알려줍니다.
+	// Redis 명령을 실행하기 전에는 원하는 모든 Pod가 실제 Ready 상태인지도 확인해야 합니다.
 	if int(sts.Status.ReadyReplicas) != replicas {
 		log.FromContext(ctx).V(1).Info("StatefulSet is not ready", "Status.ReadyReplicas", sts.Status.ReadyReplicas, "Replicas", replicas)
 		return false

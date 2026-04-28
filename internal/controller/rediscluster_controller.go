@@ -133,18 +133,22 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 	if !r.IsStatefulSetReady(ctx, cr.Namespace, leaderSTSName) || !r.IsStatefulSetReady(ctx, cr.Namespace, followerSTSName) {
 		return ctrl.Result{}, true, nil
 	}
+	// 리더 0개이하로 줄이면 안됨
 	if plan.desiredLeaderReplicas <= 0 {
 		result, err := intctrlutil.RequeueE(ctx, fmt.Errorf("desired leader replicas must be greater than zero for downscale"), "invalid downscale target")
 		return result, true, err
 	}
-
+	// 클러스터가 안정적인지 한개라도 flags: fail,fail? link-state:disconnected /
+	// flags: handshake, noaddr이면 안됨
 	stable, result, err := r.ensureClusterStableForMembershipChange(ctx, cr, "leader downscale cleanup")
 	if err != nil || !stable {
 		return result, true, err
 	}
 
+	// 제거대상 오디널 계산
 	lastOrdinalToRemove := plan.currentLeaderReplicas - 1
 	firstOrdinalToRemove := plan.desiredLeaderReplicas
+	// 마지막 리더 오디널부터 제거시작
 	for ordinalToRemove := lastOrdinalToRemove; ordinalToRemove >= firstOrdinalToRemove; ordinalToRemove-- {
 		leaderPod := k8smeta.GetPodName(cr.Name, "leader", int(ordinalToRemove))
 
@@ -156,6 +160,7 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 				"Error", err.Error())
 			continue
 		}
+		// 중복 제거하지 않기 위해 이미 클러스터에서 제거되었었는지 확인하기
 		sourceMasterJoined, err := clustermembership.IsNodeIDInCluster(ctx, r.K8sClient, cr, sourceMasterNodeID)
 		if err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to check source master node id cluster membership for overflow ordinal")
@@ -166,14 +171,17 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 				"Ordinal", ordinalToRemove,
 				"Leader.Pod", leaderPod,
 				"Source.Master.NodeID", sourceMasterNodeID)
+			// 이미 제거되었다면 다음 오디널 제거하기
 			continue
 		}
 
+		// 전이할 팟 노드아이디 고르기
 		transferMasterNodeID, hasTransferMaster, err := r.pickTransferMasterNodeID(ctx, cr, sourceMasterNodeID, plan.desiredLeaderReplicas, ordinalToRemove)
 		if err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to pick transfer master node id during downscale")
 			return result, true, requeueErr
 		}
+		// 전이용을 못찾으면?
 		if !hasTransferMaster {
 			logger.Info("no transfer master candidate found yet for overflow source; waiting",
 				"Ordinal", ordinalToRemove,
@@ -182,28 +190,33 @@ func (r *RedisClusterReconciler) reconcileLeaderDownscale(ctx context.Context, c
 			result, requeueErr := intctrlutil.RequeueAfter(ctx, time.Second*10, "waiting for transfer master candidate during downscale")
 			return result, true, requeueErr
 		}
-
+		// 리더 노드에 붙어있는 팔로워 노드들을 찾기
 		attachedFollowerNodeIDs, err := clustermembership.GetFollowerNodeIDsByMasterNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID)
 		logger.Info("attached follower node ids", "Attached.Follower.NodeIDs", attachedFollowerNodeIDs)
 		if err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to get follower node ids by source master node id")
 			return result, true, requeueErr
 		}
+		// 제거 대상 master가 아직 slot을 가진 상태에서 follower를 먼저 지우면
+		// reshard 중 장애가 났을 때 복제본 보호가 약해질 수 있습니다.
+		// 따라서 slot 소유권을 먼저 다른 master로 넘긴 뒤 follower와 source master를 제거합니다.
+		if err := clustermembership.ReshardRedisClusterByNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID, transferMasterNodeID); err != nil {
+			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to reshard cluster during leader downscale")
+			return result, true, requeueErr
+		}
+		// source master의 slot 이전이 끝난 뒤 붙어 있던 follower들을 제거합니다.
 		for _, followerNodeID := range attachedFollowerNodeIDs {
 			if err := clustermembership.RemoveRedisNodeByID(ctx, r.K8sClient, cr, followerNodeID); err != nil {
 				result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to remove attached follower node during downscale")
 				return result, true, requeueErr
 			}
 		}
-
-		if err := clustermembership.ReshardRedisClusterByNodeID(ctx, r.K8sClient, cr, sourceMasterNodeID, transferMasterNodeID); err != nil {
-			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to reshard cluster during leader downscale")
-			return result, true, requeueErr
-		}
+		// 이제 리더 노드 클러스터에서 제거
 		if err := clustermembership.RemoveRedisNodeByID(ctx, r.K8sClient, cr, sourceMasterNodeID); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to remove source master node during downscale")
 			return result, true, requeueErr
 		}
+		// 리발란싱하기
 		if err := clustermembership.RebalanceRedisCluster(ctx, r.K8sClient, cr); err != nil {
 			result, requeueErr := intctrlutil.RequeueE(ctx, err, "failed to rebalance cluster after downscale node removal")
 			return result, true, requeueErr
@@ -557,8 +570,9 @@ func (r *RedisClusterReconciler) pickTransferMasterNodeID(ctx context.Context, c
 		return "", false, fmt.Errorf("desired leader replicas must be greater than zero to pick transfer master")
 	}
 
-	startOrdinal := int(ordinalToRemove % desiredLeaderReplicas)
 	totalCandidates := int(desiredLeaderReplicas)
+
+	startOrdinal := int(ordinalToRemove) % totalCandidates
 	for offset := 0; offset < totalCandidates; offset++ {
 		ordinal := (startOrdinal + offset) % totalCandidates
 		podName := k8smeta.GetPodName(cr.Name, "leader", ordinal)
