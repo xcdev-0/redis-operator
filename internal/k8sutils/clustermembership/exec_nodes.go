@@ -112,6 +112,7 @@ func IsPodJoinedCluster(ctx context.Context, client kubernetes.Interface, cr *rc
 		PodName:   podName,
 		Namespace: cr.Namespace,
 	}
+	// Kubernetes Pod의 현재 endpoint를 조회합니다.
 	podEndpoint, err := redisservice.GetEndPoint(ctx, client, cr, pod)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -120,6 +121,7 @@ func IsPodJoinedCluster(ctx context.Context, client kubernetes.Interface, cr *rc
 		return false, fmt.Errorf("failed to get endpoint for pod %s: %w", podName, err)
 	}
 
+	// CLUSTER NODES 결과에 같은 endpoint가 있으면 membership에 join된 상태로 봅니다.
 	present, err := checkRedisNodePresenceByEndpoint(clusterNodes, podEndpoint)
 	if err != nil {
 		return false, fmt.Errorf("failed to check redis node presence by endpoint: %w", err)

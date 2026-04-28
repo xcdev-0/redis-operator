@@ -156,8 +156,10 @@ func getProbeInfo(probe *corev1.Probe, enableTLS, enableAuth bool) *corev1.Probe
 		if enableAuth {
 			healthChecker = append(healthChecker, "-a", "${REDIS_PASSWORD}")
 		}
-		// TLS가 활성화된 경우 TLS 인자 추가
-		// MTLS 활성화된 경우 대비해(tls-auth-clients yes) tls.crt, tls.key도 추가
+		// TLS가 활성화된 경우 Redis 서버 인증서를 검증하기 위해 CA 인증서를 전달합니다.
+		// 현재 Redis 설정은 tls-auth-clients optional이므로 mTLS를 강제하지는 않습니다.
+		// 다만 tls-auth-clients yes로 바뀌면 probe도 Redis에 접속하는 클라이언트이므로
+		// 클라이언트 인증서와 개인키를 제시해야 합니다. 이를 대비해 cert/key도 함께 전달합니다.
 		if enableTLS {
 			healthChecker = append(healthChecker, "--tls", "--cert", "${REDIS_TLS_CERT}", "--key", "${REDIS_TLS_KEY}", "--cacert", "${REDIS_TLS_CA_CERT}")
 		}
@@ -196,8 +198,17 @@ func GenerateAuthAndTLSArgs(enableAuth, enableTLS bool) (string, string) {
 // Master 노드가 종료될 때 가장 최신 상태의 Follower로 자동 Failover를 수행하여
 // 데이터 손실을 방지하고 서비스 중단 시간을 최소화합니다.
 func generateClusterPreStop(authArgs, tlsArgs string) string {
+	// redis-cli info replication 출력 예시는 다음과 같습니다.
+	//
+	// role:master
+	// connected_slaves:2
 	// slave0:ip=10.0.0.2,port=6379,state=online,offset=12345,lag=0
 	// slave1:ip=10.0.0.3,port=6379,state=online,offset=12000,lag=1
+	//
+	// preStop에서는 현재 Pod가 master인지 먼저 확인합니다.
+	// master라면 slave 목록 중 replication offset이 가장 큰 follower를 고릅니다.
+	// offset이 가장 큰 follower가 가장 최신 데이터까지 따라왔을 가능성이 높기 때문입니다.
+	// CLUSTER FAILOVER는 승격될 replica 쪽에서 실행해야 하므로 BEST_SLAVE에 명령을 보냅니다.
 
 	return fmt.Sprintf(`#!/bin/sh
 # 현재 노드의 역할 확인

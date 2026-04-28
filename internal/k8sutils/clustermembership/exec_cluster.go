@@ -407,7 +407,9 @@ func ExecuteRedisReplicationCommand(
 			log.FromContext(ctx).Error(err, "Failed to get endpoint for follower pod", "Pod", followerPod.PodName)
 			continue
 		}
-		// 팔로워팟의 엔드포인트가 노드에 존재하지 않는다는건 아직 복제하지 않았다는 뜻
+		// follower Pod endpoint가 CLUSTER NODES에 없으면 아직 Redis Cluster membership에 join되지 않은 상태입니다.
+		// 이때만 --cluster-slave 옵션으로 replica node를 추가합니다.
+		// 이미 endpoint가 존재한다면 master/slave 현재 역할과 관계없이 membership에는 들어와 있으므로 중복 add-node를 하지 않습니다.
 		if present, err := checkRedisNodePresenceByEndpoint(nodes, followerEndpoint); err != nil {
 			return fmt.Errorf("failed to check redis node presence by endpoint: %w", err)
 		} else if !present {
@@ -446,7 +448,9 @@ func ExecuteRedisReplicationCommand(
 			} else {
 				return fmt.Errorf("follower pod %s is not ready for replication (ping=%s)", followerPod.PodName, pong)
 			}
-		} else { // 이미 팔로워 노드가 클러스터내에 존재함
+		} else {
+			// 이미 Redis Cluster membership에 존재하는 Pod입니다.
+			// failover로 실제 Redis role이 바뀌었더라도 add-node 대상은 아니므로 skip합니다.
 			log.FromContext(ctx).V(1).Info("Skipping Adding node to cluster, already present.", "Follower.Pod", followerPod)
 		}
 	}
@@ -503,10 +507,11 @@ func RepairDisconnectedNodes(ctx context.Context, client kubernetes.Interface, c
 			}
 		}
 
-		// 모든 Pod IP에 대해 CLUSTER MEET 시도
-		// - 이미 연결된 노드는 무시됨 (안전)
-		// - IP가 바뀐 노드는 주소 업데이트
-		// - 새 노드는 추가
+		// 모든 Pod IP에 대해 CLUSTER MEET을 시도합니다.
+		// Redis Cluster에서 node ID는 노드의 정체성이고, IP/port는 해당 node ID의 현재 주소입니다.
+		// Pod 재생성으로 IP가 바뀌어도 nodes.conf가 유지되어 node ID가 같다면,
+		// 새 Pod IP로 다시 MEET을 수행하면서 cluster gossip이 해당 node의 주소를 갱신할 수 있습니다.
+		// 이미 연결된 노드는 중복 MEET이 큰 영향을 주지 않고, 아직 모르는 노드는 새 membership 후보가 됩니다.
 		for _, podIP := range allPodIPs {
 			err := redisClient.ClusterMeet(ctx, podIP, port).Err()
 			if err != nil {

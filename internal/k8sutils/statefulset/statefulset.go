@@ -62,10 +62,6 @@ func (s *StatefulSetService) IsStatefulSetReady(ctx context.Context, namespace, 
 	// 현재 검사는 StatefulSet status를 신뢰하고 업데이트된 Pod 개수만 확인합니다.
 	// 특히 partition이 1 이상이면 이전 revision과 새 revision이 의도적으로 섞일 수 있으므로,
 	// CurrentRevision == UpdateRevision 조건을 강제할 수 없습니다.
-	// 더 엄밀하게 보려면 이 StatefulSet이 소유한 Pod 목록을 조회하고 ordinal을 파싱한 뒤,
-	// ordinal < partition인 Pod은 이전 revision이어도 허용하고,
-	// ordinal >= partition인 모든 Pod의 controller-revision-hash 라벨이
-	// sts.Status.UpdateRevision과 같은지 확인할 수 있습니다.
 	if expectedUpdateReplicas := replicas - partition; sts.Status.UpdatedReplicas < int32(expectedUpdateReplicas) {
 		log.FromContext(ctx).V(1).Info("StatefulSet is not ready", "Status.UpdatedReplicas", sts.Status.UpdatedReplicas, "ExpectedUpdateReplicas", expectedUpdateReplicas)
 		return false
