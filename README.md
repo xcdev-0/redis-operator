@@ -47,7 +47,7 @@ Kubernetes 위에서 Redis Cluster를 생성하고 운영하기 위한 Operator 
 - headless Service
 - exporter / monitoring 리소스
 
-즉, Redis Cluster membership과 Kubernetes 리소스 상태를 함께 맞춰 가는 구조입니다.
+Redis Cluster membership과 Kubernetes 리소스 상태를 함께 맞춰 가는 구조입니다.
 
 ## 빠른 시작
 
